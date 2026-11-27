@@ -1,0 +1,6 @@
+{
+  "name": "مين؟ MEEN",
+  "description": "منصة اجتماعية عربية للفضفضة والتواصل ومشاركة القصص والأسئلة والمجتمعات بأمان وخصوصية.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
