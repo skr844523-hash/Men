@@ -28,13 +28,17 @@ adminRouter.get('/admin/status', (req, res) => {
   const userEmail = req.user?.email ? req.user.email.trim().toLowerCase() : null;
   const isDesignatedEmail = Boolean(userEmail && userEmail === DESIGNATED_ADMIN_EMAIL);
 
+  const requesterIsAdmin = req.user?.role === 'admin' || req.user?.role === 'moderator';
   res.json({
     hasAdmin,
     envPasscodeConfigured: envPasscodeSet,
+    adminEmailConfigured: Boolean(DESIGNATED_ADMIN_EMAIL),
     canBootstrap: !hasAdmin,
-    designatedAdminEmail: DESIGNATED_ADMIN_EMAIL,
+    // Only reveal the designated admin email while bootstrap is still open,
+    // or to an already-authenticated admin. Otherwise keep it private.
+    designatedAdminEmail: !hasAdmin || requesterIsAdmin ? DESIGNATED_ADMIN_EMAIL : undefined,
     canPromoteCurrentUser: isDesignatedEmail,
-    isAdmin: req.user?.role === 'admin' || req.user?.role === 'moderator',
+    isAdmin: requesterIsAdmin,
     isPrimaryAdmin: req.user?.role === 'admin',
     isDesignatedAdmin: req.user?.role === 'admin' && isDesignatedEmail,
   });
@@ -47,6 +51,14 @@ adminRouter.post('/admin/bootstrap', (req, res) => {
     .get() as { cnt: number };
   if (Number(adminCountRow?.cnt ?? 0) > 0) {
     res.status(403).json({ error: 'تم إعداد حساب الإدارة بالفعل.' });
+    return;
+  }
+
+  if (!DESIGNATED_ADMIN_EMAIL) {
+    res.status(503).json({
+      error:
+        'لم يتم ضبط البريد الإداري (ADMIN_EMAIL) في إعدادات الخادم. أضفه إلى ملف .env ثم أعد تشغيل الخادم.',
+    });
     return;
   }
 

@@ -1,26 +1,58 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# مين؟ MEEN
 
-# Run and deploy your AI Studio app
+منصة اجتماعية عربية للفضفضة والتواصل ومشاركة القصص والأسئلة والمجتمعات بأمان وخصوصية.
 
-This contains everything you need to run your app locally.
+## المتطلبات
 
-View your app in AI Studio: https://ai.studio/apps/3d422ac7-33f9-458b-9a87-3035408c086d
+- **Node.js إصدار 22.5 أو أحدث** (قاعدة البيانات SQLite مدمجة في Node نفسه `node:sqlite`، فلا حاجة لأي خادم قاعدة بيانات خارجي). تحقق من الإصدار بأمر: `node --version`
 
-## Run Locally
+## التشغيل محليًا (وضع التطوير)
 
-**Prerequisites:**  Node.js
+1. ثبّت الحزم:
+   ```
+   npm install
+   ```
+   (إذا ظهر خطأ تعارض حزم عندك في نسخة قديمة، استخدم `npm install --legacy-peer-deps` أو حدّث `package.json` لهذه النسخة.)
+2. شغّل التطبيق:
+   ```
+   npm run dev
+   ```
+3. افتح المتصفح على: `http://localhost:3000`
 
+ملاحظة مهمة: أمر `npm run preview` يعرض الواجهة فقط بدون الخادم، لذلك **لن يعمل** تسجيل الدخول أو إنشاء الحساب من خلاله. استخدم دائمًا `npm run dev` للتجربة، أو وضع الإنتاج الكامل بالأسفل.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## إعداد حساب الإدارة (Admin)
 
-## Production environment configuration
+1. أنشئ ملف `.env` في جذر المشروع (انسخه من `.env.example`) وحدّد فيه:
+   ```
+   ADMIN_EMAIL=بريدك@example.com
+   SESSION_SECRET=سلسلة-عشوائية-طويلة-32-حرف-على-الأقل
+   ```
+2. أعد تشغيل الخادم، ثم سجّل حسابًا جديدًا **بنفس البريد** المكتوب في `ADMIN_EMAIL`.
+3. من صفحة الإدارة (Admin Dashboard) فعّل صلاحيات الإدارة بإدخال كلمة مرور حسابك.
 
-Before production deployment, set `APP_URL`, `SESSION_SECRET` (a stable random secret of at least 32 characters), and `ADMIN_EMAIL` in the hosting environment. `ADMIN_PASSCODE` is optional. Do not commit real secrets or personal administrator email addresses. The WebSocket endpoint authenticates using the HttpOnly session cookie; session tokens are not accepted in URL query strings.
+بدون ضبط `ADMIN_EMAIL` لن يستطيع أي شخص تفعيل لوحة الإدارة، وسيظهر تنبيه واضح بذلك.
 
-In production the server refuses to start if `SESSION_SECRET` is missing or too short. In development, an ephemeral secret fallback is used and sessions will be invalidated after restart. Ensure SQLite and the uploads directory are on persistent storage supplied by the host.
+## وضع الإنتاج
+
+```
+npm run build
+SESSION_SECRET=... NODE_ENV=production npm start
+```
+
+- في وضع الإنتاج يرفض الخادم العمل بدون `SESSION_SECRET` بطول 32 حرفًا على الأقل.
+- اضبط `APP_URL` على رابط موقعك العام.
+- قاعدة البيانات تُحفظ في مجلد `data/` والملفات المرفوعة في `uploads/` — اجعلهما على تخزين دائم في الاستضافة.
+
+## متغيرات البيئة
+
+| المتغير | الوصف | إلزامي؟ |
+| --- | --- | --- |
+| `SESSION_SECRET` | سر توقيع الجلسات (32+ حرف) | إلزامي في الإنتاج |
+| `ADMIN_EMAIL` | البريد المعتمد لحساب الإدارة الأول | لتفعيل لوحة الإدارة |
+| `ADMIN_PASSCODE` | رمز إضافي اختياري لدخول لوحة الإدارة | اختياري |
+| `APP_URL` | الرابط العام للموقع | في الإنتاج |
+| `DATABASE_PATH` | مسار مخصص لملف قاعدة البيانات | اختياري |
+| `PORT` | منفذ الخادم (افتراضي 3000) | اختياري |
+
+ملاحظة: المشروع لا يحتاج `GEMINI_API_KEY` ولا أي مفتاح خارجي للتشغيل.

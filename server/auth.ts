@@ -129,40 +129,37 @@ export function setSessionCookie(
   expiresAt: Date,
   rememberMe = true
 ): void {
-  const isHttps =
-    req.secure ||
-    req.headers['x-forwarded-proto'] === 'https' ||
-    req.hostname === 'localhost' ||
-    req.hostname === '127.0.0.1';
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
 
+  // Browsers reject SameSite=None cookies without Secure. On plain-HTTP
+  // deployments (local network, testing) fall back to SameSite=Lax so the
+  // session cookie is actually stored instead of silently dropped.
   const parts = [
     `meen_session=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
     ...(rememberMe ? [`Expires=${expiresAt.toUTCString()}`] : []),
-    'SameSite=None',
   ];
   if (isHttps) {
-    parts.push('Secure', 'Partitioned');
+    parts.push('SameSite=None', 'Secure', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
   }
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
 export function clearSessionCookie(res: Response, req: Request): void {
-  const isHttps =
-    req.secure ||
-    req.headers['x-forwarded-proto'] === 'https' ||
-    req.hostname === 'localhost' ||
-    req.hostname === '127.0.0.1';
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
   const parts = [
     'meen_session=',
     'Path=/',
     'HttpOnly',
     'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
-    'SameSite=None',
   ];
   if (isHttps) {
-    parts.push('Secure', 'Partitioned');
+    parts.push('SameSite=None', 'Secure', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
   }
   res.setHeader('Set-Cookie', parts.join('; '));
 }
