@@ -42,5 +42,8 @@
   "description": "مين؟ MEEN - منصة اجتماعية عربية للفضفضة والتواصل",
   "engines": {
     "node": ">=22.5.0"
+  },
+  "overrides": {
+    "jwks-rsa": "3.2.2"
   }
 }
