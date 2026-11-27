@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, KeyRound, ShieldCheck, Upload, UserCheck, ArrowRight, CheckCircle2 } from 'lucide-react';
-import { apiRequest, setMemoryToken, uploadMediaFile } from '../lib/api';
+import { GoogleAuthProvider, signInWithCustomToken, signInWithPopup } from 'firebase/auth';
+import { apiRequest, uploadMediaFile } from '../lib/api';
+import { getFirebaseAuth } from '../lib/firebase/config';
 import {
   checkMinimumAge,
   validateEmail,
@@ -72,17 +74,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [showPolicyModal, setShowPolicyModal] = useState(false);
 
-  // Recovery confirmation state after registration
-  const [registeredResult, setRegisteredResult] = useState<{
-    user: User;
-    recoveryCode: string;
-  } | null>(null);
-
-  // Recover password state
+  const [googleProfile, setGoogleProfile] = useState<{ email: string; name: string } | null>(null);
   const [recId, setRecId] = useState('');
-  const [recCode, setRecCode] = useState('');
-  const [recNewPass, setRecNewPass] = useState('');
-  const [recConfirmPass, setRecConfirmPass] = useState('');
   const [recMessage, setRecMessage] = useState('');
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,19 +105,77 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     );
   };
 
+  const finishSignIn = async (customToken: string) => {
+    await signInWithCustomToken(getFirebaseAuth(), customToken);
+    const me = await apiRequest<{ user: User | null }>('/auth/me');
+    if (!me.user) throw new Error('تعذر تحميل الحساب بعد تسجيل الدخول.');
+    onSuccess(me.user);
+  };
+
+  const authErrorMessage = (err: unknown, fallback: string) => {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return '';
+    if (code === 'auth/popup-blocked') return 'المتصفح منع نافذة جوجل. اسمح بالنوافذ المنبثقة ثم حاول مرة أخرى.';
+    if (code === 'auth/unauthorized-domain') return 'هذا الدومين غير مصرح له بتسجيل الدخول بجوجل بعد. أضفه في Firebase Authentication (Authorized domains).';
+    if (code === 'auth/network-request-failed') return 'تعذر الاتصال بالإنترنت. تحقق من الشبكة وحاول مرة أخرى.';
+    return err instanceof Error ? err.message : fallback;
+  };
+
+  const handleGoogle = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      const cred = await signInWithPopup(getFirebaseAuth(), new GoogleAuthProvider());
+      const me = await apiRequest<{ user: User | null; needsProfile?: boolean }>('/auth/me');
+      if (me.user) {
+        onSuccess(me.user);
+      } else {
+        setGoogleProfile({ email: cred.user.email || '', name: cred.user.displayName || '' });
+        setDisplayName((cred.user.displayName || '').slice(0, 40));
+      }
+    } catch (err) {
+      const msg = authErrorMessage(err, 'تعذر تسجيل الدخول بجوجل.');
+      if (msg) setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCompleteGoogle = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    const userCheck = validateUsername(username);
+    if (!userCheck.valid) return void setError(userCheck.error || 'اسم المستخدم غير صالح.');
+    if (displayName.trim().length < 2) return void setError('الاسم المستعار يجب أن يكون حرفين على الأقل.');
+    const ageCheck = checkMinimumAge(birthDate, 13);
+    if (!ageCheck.valid) return void setError(ageCheck.error || 'تاريخ الميلاد غير مناسب.');
+    if (!termsAccepted) return void setError('يجب الموافقة على الشروط وسياسة الخصوصية أولًا.');
+    setLoading(true);
+    try {
+      const res = await apiRequest<{ user: User }>('/auth/complete-profile', {
+        method: 'POST',
+        body: { displayName: displayName.trim(), username: userCheck.value, birthDate, avatar, interests, termsAccepted },
+      });
+      onSuccess(res.user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'تعذر إكمال الحساب.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      const res = await apiRequest<{ token: string; user: User }>('/auth/login', {
+      const res = await apiRequest<{ customToken: string }>('/auth/login', {
         method: 'POST',
-        body: { identifier: loginId, password: loginPass, rememberMe },
+        body: { identifier: loginId, password: loginPass },
       });
-      setMemoryToken(res.token);
-      onSuccess(res.user);
+      await finishSignIn(res.customToken);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تسجيل الدخول.');
+      setError(authErrorMessage(err, 'تعذر تسجيل الدخول.'));
     } finally {
       setLoading(false);
     }
@@ -173,7 +224,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     setLoading(true);
     try {
-      const res = await apiRequest<{ token: string; recoveryCode: string; user: User }>(
+      const res = await apiRequest<{ customToken: string; user: User }>(
         '/auth/register',
         {
           method: 'POST',
@@ -192,8 +243,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           },
         }
       );
-      setMemoryToken(res.token);
-      setRegisteredResult({ user: res.user, recoveryCode: res.recoveryCode });
+      await finishSignIn(res.customToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر إنشاء الحساب.');
     } finally {
@@ -207,55 +257,37 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setRecMessage('');
     setLoading(true);
     try {
-      const res = await apiRequest<{ message: string; newRecoveryCode: string }>('/auth/recover', {
+      const res = await apiRequest<{ message: string }>('/auth/recover', {
         method: 'POST',
-        body: {
-          identifier: recId,
-          recoveryCode: recCode,
-          newPassword: recNewPass,
-          confirmPassword: recConfirmPass,
-        },
+        body: { identifier: recId },
       });
-      setRecMessage(`${res.message} الرمز الجديد: ${res.newRecoveryCode}`);
+      setRecMessage(res.message);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر استعادة الحساب.');
+      setError(err instanceof Error ? err.message : 'تعذر إرسال رابط الاستعادة.');
     } finally {
       setLoading(false);
     }
   };
 
-  if (registeredResult) {
+  if (googleProfile) {
+    const input = 'w-full min-h-[44px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 text-sm';
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F8F7FB] dark:bg-[#09090D] p-4">
-        <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#12121A] border border-slate-200 dark:border-white/10 p-6 shadow-xl">
-          <div className="flex items-center gap-3 mb-4 text-emerald-500">
-            <CheckCircle2 className="w-7 h-7 shrink-0" />
-            <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white">
-              مرحبًا بك في مين؟ يا {registeredResult.user.displayName}
-            </h2>
-          </div>
-          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-4">
-            تم إنشاء حسابك بنجاح. احتفظ برمز الاستعادة الشخصي التالي في مكان آمن لاستخدامه إذا نسيت كلمة المرور:
-          </p>
-          <div className="rounded-2xl bg-violet-500/10 border border-violet-500/30 p-4 text-center mb-5">
-            <span className="block text-xs text-violet-600 dark:text-violet-300 mb-1">
-              رمز استعادة الحساب
-            </span>
-            <code
-              className="font-mono text-2xl font-bold tracking-widest text-violet-700 dark:text-violet-200 select-all"
-              data-testid="recovery-code-display"
-            >
-              {registeredResult.recoveryCode}
-            </code>
-          </div>
-          <button
-            type="button"
-            onClick={() => onSuccess(registeredResult.user)}
-            className="w-full min-h-[48px] rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold text-sm transition-colors"
-          >
-            حفظت الرمز — ابدأ الآن
+        <form onSubmit={handleCompleteGoogle} className="w-full max-w-md rounded-3xl bg-white dark:bg-[#12121A] border border-slate-200 dark:border-white/10 p-6 shadow-xl space-y-3.5">
+          <h2 className="font-display text-xl font-bold text-slate-900 dark:text-white">أكمل حسابك في مين؟</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400" dir="ltr">{googleProfile.email}</p>
+          {error && <div role="alert" className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-xs text-rose-500">{error}</div>}
+          <input aria-label="الاسم المستعار" placeholder="الاسم المستعار" value={displayName} onChange={(e) => setDisplayName(e.target.value)} className={input} />
+          <input aria-label="اسم المستخدم" placeholder="اسم المستخدم (إنجليزي)" dir="ltr" value={username} onChange={(e) => setUsername(e.target.value)} className={input} />
+          <input aria-label="تاريخ الميلاد" type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} className={input} />
+          <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
+            <input type="checkbox" checked={termsAccepted} onChange={(e) => setTermsAccepted(e.target.checked)} className="mt-0.5" />
+            <span>أوافق على الشروط وسياسة الخصوصية.</span>
+          </label>
+          <button type="submit" disabled={loading} className="w-full min-h-[48px] rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white font-semibold text-sm">
+            {loading ? 'جاري الحفظ...' : 'ابدأ الآن'}
           </button>
-        </div>
+        </form>
       </div>
     );
   }
@@ -341,6 +373,31 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               className="mb-4 rounded-xl bg-rose-500/10 border border-rose-500/30 px-4 py-3 text-sm text-rose-600 dark:text-rose-300"
             >
               {error}
+            </div>
+          )}
+
+          {mode !== 'recover' && (
+            <div className="mb-5">
+              <button
+                type="button"
+                onClick={handleGoogle}
+                disabled={loading}
+                data-testid="google-signin"
+                className="w-full min-h-[48px] rounded-xl border border-slate-300 dark:border-white/15 bg-white dark:bg-white/5 hover:bg-slate-50 dark:hover:bg-white/10 disabled:opacity-60 text-slate-800 dark:text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+              >
+                <svg viewBox="0 0 48 48" className="w-5 h-5" aria-hidden="true">
+                  <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z"/>
+                  <path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.9-6.1C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.8l7.9-6.1z"/>
+                  <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z"/>
+                </svg>
+                <span>المتابعة بحساب جوجل</span>
+              </button>
+              <div className="flex items-center gap-3 my-4 text-[11px] text-slate-400">
+                <span className="flex-1 h-px bg-slate-200 dark:bg-white/10" />
+                <span>أو بالبريد وكلمة المرور</span>
+                <span className="flex-1 h-px bg-slate-200 dark:bg-white/10" />
+              </div>
             </div>
           )}
 
@@ -679,7 +736,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-white">
                 <KeyRound className="w-4 h-4 text-violet-500" />
-                <span>استعادة الحساب عبر رمز الاستعادة</span>
+                <span>استعادة كلمة المرور عبر البريد الإلكتروني</span>
               </div>
 
               {recMessage && (
@@ -705,86 +762,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 />
               </div>
 
-              <div>
-                <label
-                  htmlFor="rec-code"
-                  className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
-                >
-                  رمز الاستعادة الشخصي
-                </label>
-                <input
-                  id="rec-code"
-                  type="text"
-                  required
-                  dir="ltr"
-                  value={recCode}
-                  onChange={(e) => setRecCode(e.target.value)}
-                  placeholder="A1B2C3D4"
-                  className="w-full min-h-[44px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 text-sm font-mono uppercase text-left"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label
-                    htmlFor="rec-new-pass"
-                    className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    كلمة المرور الجديدة
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="rec-new-pass"
-                      type={showRecPass ? 'text' : 'password'}
-                      required
-                      value={recNewPass}
-                      onChange={(e) => setRecNewPass(e.target.value)}
-                      className="w-full min-h-[44px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 pl-10 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowRecPass((v) => !v)}
-                      className="absolute left-1 top-1/2 -translate-y-1/2 min-h-[36px] min-w-[36px] flex items-center justify-center text-slate-400 hover:text-slate-200"
-                      aria-label={showRecPass ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                    >
-                      {showRecPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <label
-                    htmlFor="rec-conf-pass"
-                    className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    تأكيد كلمة المرور
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="rec-conf-pass"
-                      type={showRecConfirmPass ? 'text' : 'password'}
-                      required
-                      value={recConfirmPass}
-                      onChange={(e) => setRecConfirmPass(e.target.value)}
-                      className="w-full min-h-[44px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 pl-10 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowRecConfirmPass((v) => !v)}
-                      className="absolute left-1 top-1/2 -translate-y-1/2 min-h-[36px] min-w-[36px] flex items-center justify-center text-slate-400 hover:text-slate-200"
-                      aria-label={showRecConfirmPass ? 'إخفاء تأكيد كلمة المرور' : 'إظهار تأكيد كلمة المرور'}
-                    >
-                      {showRecConfirmPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
               <button
                 type="submit"
                 disabled={loading}
                 className="w-full min-h-[48px] rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-colors"
               >
-                {loading ? 'جاري التحديث...' : 'استعادة كلمة المرور'}
+                {loading ? 'جاري الإرسال...' : 'أرسل رابط إعادة التعيين'}
               </button>
             </form>
           )}

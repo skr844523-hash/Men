@@ -8,3 +8,6 @@ coverage/
 !.env.example
 data/
 uploads/
+.vercel
+*.local
+database-debug.log

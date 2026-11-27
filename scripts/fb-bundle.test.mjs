@@ -1,0 +1,20 @@
+// Tests the exact artifact Vercel runs (api/index.js) as a plain (req,res) handler.
+import http from 'node:http';
+import { createRequire } from 'node:module';
+import { check, results, client, idTokenFromCustom } from './fb-test-lib.mjs';
+const handler = createRequire(import.meta.url)('../api/index.js');
+check('bundle exports a handler function', typeof handler === 'function');
+const server = http.createServer(handler).listen(0);
+const api = client(`http://127.0.0.1:${server.address().port}`);
+let r = await api('GET', '/health');
+check('health ok through bundle', r.status === 200 && r.body.database === 'ok', JSON.stringify(r.body));
+r = await api('POST', '/auth/register', { displayName: 'Bun', username: 'bundleuser', email: 'bundle@example.com', password: 'Passw0rd!x', confirmPassword: 'Passw0rd!x', birthDate: '2000-01-01', termsAccepted: true });
+check('register through bundle', r.status === 201);
+const tok = await idTokenFromCustom(r.body.customToken);
+r = await api('GET', '/auth/me', undefined, tok);
+check('me through bundle', r.body.user?.username === 'bundleuser' && r.body.user.role === 'user');
+r = await api('GET', '/nope');
+check('unknown api path 404 json', r.status === 404);
+console.log(`\n${results.pass} passed, ${results.fail} failed`);
+server.close();
+process.exit(results.fail ? 1 : 0);

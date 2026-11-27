@@ -48,6 +48,7 @@ import { SavedView } from './views/SavedView';
 import { SettingsHelpView } from './views/SettingsHelpView';
 import { AdminDashboardView } from './views/AdminDashboardView';
 import type { AppConfig, AppSection, User } from './types';
+import { subscribeLive } from './lib/realtime';
 
 const DEFAULT_CONFIG: AppConfig = {
   categories: ['فضفضة', 'مشاعر', 'مواقف', 'أسئلة', 'قصص', 'نصائح', 'علاقات', 'الحياة اليومية'],
@@ -97,7 +98,6 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [instantAlert, setInstantAlert] = useState<RealtimeNotificationPayload | null>(null);
   const [lastWsEvent, setLastWsEvent] = useState<Record<string, unknown> | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const sectionRef = useRef<AppSection>(section);
   sectionRef.current = section;
   const userRef = useRef<User | null>(user);
@@ -105,12 +105,6 @@ export default function App() {
   const appConfigRef = useRef<AppConfig>(appConfig);
   appConfigRef.current = appConfig;
   const instantAlertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const sendWsEvent = useCallback((payload: Record<string, unknown>) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(payload));
-    }
-  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -163,114 +157,46 @@ export default function App() {
     fetchMe();
   }, [fetchMe]);
 
-  // Real-time WebSocket connection whenever authenticated (exponential backoff + online resync)
+  // Realtime: Firebase Realtime Database channels (see src/lib/realtime.ts).
   useEffect(() => {
-    if (!user) {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
+    if (!user?.uid) return;
+    const unsubscribe = subscribeLive(user.uid, (event) => {
+      setLastWsEvent(event);
+      if (event.type === 'notification:new') {
+        const notif = event.notification as RealtimeNotificationPayload | undefined;
+        if (!notif) return;
+        const decision = evaluateRealtimeNotification(
+          notif,
+          userRef.current,
+          sectionRef.current,
+          appConfigRef.current.notificationSettings
+        );
+        if (decision.shouldIncrementUnread) {
+          setUser((prev) => (prev ? { ...prev, unreadNotifications: prev.unreadNotifications + 1 } : prev));
+        }
+        if (decision.shouldShowInstantAlert) showInstantAlert(notif);
+      } else if (event.type === 'app:notification_settings_updated') {
+        const nextSettings = event.notificationSettings as AppConfig['notificationSettings'];
+        if (nextSettings) setAppConfig((prev) => ({ ...prev, notificationSettings: nextSettings }));
+      } else if (event.type === 'message:new') {
+        const msg = event.message as { senderId?: number };
+        if (msg.senderId !== user.id) {
+          setUser((prev) => (prev ? { ...prev, unreadMessages: prev.unreadMessages + 1 } : prev));
+        }
+      } else if (event.type === 'feed:new_post') {
+        setNewFeedAvailable(true);
       }
-      return;
-    }
-
-    let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let attempt = 0;
-    let hasConnectedBefore = false;
-
-    const connect = () => {
-      if (cancelled) return;
-      if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) return;
-
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // WebSocket authentication uses the HttpOnly session cookie; do not put tokens in URLs.
-      const wsUrl = `${proto}//${window.location.host}/ws`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        attempt = 0;
-        if (hasConnectedBefore) {
-          fetchMe();
-          setWsSyncSignal((s) => s + 1);
-        }
-        hasConnectedBefore = true;
-      };
-
-      ws.onmessage = (ev) => {
-        try {
-          const event = JSON.parse(ev.data) as Record<string, unknown>;
-          setLastWsEvent(event);
-          if (event.type === 'notification:new') {
-            const notif = event.notification as RealtimeNotificationPayload | undefined;
-            if (!notif) return;
-            const decision = evaluateRealtimeNotification(
-              notif,
-              userRef.current,
-              sectionRef.current,
-              appConfigRef.current.notificationSettings
-            );
-            if (decision.shouldIncrementUnread) {
-              setUser((prev) =>
-                prev ? { ...prev, unreadNotifications: prev.unreadNotifications + 1 } : prev
-              );
-            }
-            if (decision.shouldShowInstantAlert) {
-              showInstantAlert(notif);
-            }
-          } else if (event.type === 'app:notification_settings_updated') {
-            const nextSettings = event.notificationSettings as AppConfig['notificationSettings'];
-            if (nextSettings) {
-              setAppConfig((prev) => ({ ...prev, notificationSettings: nextSettings }));
-            }
-          } else if (event.type === 'message:new') {
-            const msg = event.message as { senderId?: number };
-            if (msg.senderId !== user.id) {
-              setUser((prev) =>
-                prev ? { ...prev, unreadMessages: prev.unreadMessages + 1 } : prev
-              );
-            }
-          } else if (event.type === 'feed:new_post') {
-            setNewFeedAvailable(true);
-          }
-        } catch {
-          // Ignore invalid socket messages
-        }
-      };
-
-      ws.onclose = () => {
-        if (wsRef.current === ws) {
-          wsRef.current = null;
-        }
-        if (!cancelled) {
-          const delay = Math.min(10000, 1000 * Math.pow(2, attempt));
-          attempt += 1;
-          reconnectTimer = setTimeout(connect, delay);
-        }
-      };
-    };
-
+    });
     const handleOnline = () => {
-      if (!cancelled) {
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-        attempt = 0;
-        connect();
-      }
+      fetchMe();
+      setWsSyncSignal((s) => s + 1);
     };
-
     window.addEventListener('online', handleOnline);
-    connect();
     return () => {
-      cancelled = true;
       window.removeEventListener('online', handleOnline);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      wsRef.current?.close();
-      wsRef.current = null;
+      unsubscribe();
     };
-  }, [user?.id, fetchMe]);
+  }, [user?.uid, user?.id, fetchMe, showInstantAlert]);
 
   const navigate = (target: AppSection) => {
     const authOnlySections: AppSection[] = [
@@ -673,7 +599,6 @@ export default function App() {
               initialConversationId={selectedConversationId}
               lastWsEvent={lastWsEvent}
               syncSignal={wsSyncSignal}
-              sendWsEvent={sendWsEvent}
               onUnreadRefresh={fetchMe}
               onOpenProfile={openProfile}
               onToast={showToast}

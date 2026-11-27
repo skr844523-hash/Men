@@ -63,25 +63,14 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [answerText, setAnswerText] = useState('');
   const [answerAnon, setAnswerAnon] = useState(false);
 
-  // Live WebSocket comments & replies for open comment threads
+  // Realtime hints (post:comment_new / post:reply_new) carry only ids and counters,
+  // so open threads refetch their comments through the API (which enforces visibility).
   useEffect(() => {
     if (!lastWsEvent || !commentsOpen) return;
-    if (lastWsEvent.type === 'post:comment_new' && Number(lastWsEvent.postId) === post.id) {
-      const incoming = lastWsEvent.comment as CommentItem | undefined;
-      if (!incoming) return;
-      setComments((prev) => (prev.some((c) => c.id === incoming.id) ? prev : [...prev, incoming]));
-    } else if (lastWsEvent.type === 'post:reply_new' && Number(lastWsEvent.postId) === post.id) {
-      const commentId = Number(lastWsEvent.commentId);
-      const reply = lastWsEvent.reply as CommentReply | undefined;
-      if (!commentId || !reply) return;
-      setComments((prev) =>
-        prev.map((c) => {
-          if (c.id !== commentId) return c;
-          const existing = c.replies || [];
-          if (existing.some((r) => r.id === reply.id)) return c;
-          return { ...c, replies: [...existing, reply] };
-        })
-      );
+    if ((lastWsEvent.type === 'post:comment_new' || lastWsEvent.type === 'post:reply_new') && Number(lastWsEvent.postId) === post.id) {
+      apiRequest<{ comments: CommentItem[] }>(`/posts/${post.id}/comments`)
+        .then((res) => setComments(res.comments))
+        .catch(() => {});
     }
   }, [lastWsEvent, commentsOpen, post.id]);
 

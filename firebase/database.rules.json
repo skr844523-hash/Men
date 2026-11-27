@@ -1,0 +1,180 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "t": {
+      ".read": false,
+      ".write": false,
+      "users": {
+        ".indexOn": [
+          "role",
+          "uid",
+          "status"
+        ]
+      },
+      "posts": {
+        ".indexOn": [
+          "author_id",
+          "community_id",
+          "type",
+          "challenge_id",
+          "daily_question_id"
+        ]
+      },
+      "comments": {
+        ".indexOn": [
+          "post_id",
+          "author_id"
+        ]
+      },
+      "comment_replies": {
+        ".indexOn": [
+          "comment_id",
+          "author_id"
+        ]
+      },
+      "reactions": {
+        ".indexOn": [
+          "user_id",
+          "target_id"
+        ]
+      },
+      "saved_posts": {
+        ".indexOn": [
+          "user_id",
+          "post_id"
+        ]
+      },
+      "post_follows": {
+        ".indexOn": [
+          "user_id",
+          "post_id"
+        ]
+      },
+      "notifications": {
+        ".indexOn": [
+          "user_id"
+        ]
+      },
+      "user_points": {
+        ".indexOn": [
+          "user_id"
+        ]
+      },
+      "user_badges": {
+        ".indexOn": [
+          "user_id"
+        ]
+      },
+      "blocked_users": {
+        ".indexOn": [
+          "blocker_id",
+          "blocked_id"
+        ]
+      },
+      "friendships": {
+        ".indexOn": [
+          "requester_id",
+          "addressee_id"
+        ]
+      },
+      "follows": {
+        ".indexOn": [
+          "follower_id",
+          "following_id"
+        ]
+      },
+      "community_members": {
+        ".indexOn": [
+          "community_id",
+          "user_id"
+        ]
+      },
+      "communities": {
+        ".indexOn": [
+          "creator_id",
+          "slug"
+        ]
+      },
+      "conversations": {
+        ".indexOn": [
+          "user1_id",
+          "user2_id"
+        ]
+      },
+      "messages": {
+        ".indexOn": [
+          "conversation_id",
+          "sender_id"
+        ]
+      },
+      "answers": {
+        ".indexOn": [
+          "question_post_id",
+          "author_id"
+        ]
+      },
+      "answer_votes": {
+        ".indexOn": [
+          "user_id",
+          "answer_id"
+        ]
+      },
+      "poll_votes": {
+        ".indexOn": [
+          "user_id",
+          "poll_post_id"
+        ]
+      },
+      "challenge_entries": {
+        ".indexOn": [
+          "challenge_id",
+          "user_id",
+          "post_id"
+        ]
+      },
+      "reports": {
+        ".indexOn": [
+          "status",
+          "reporter_id",
+          "target_id"
+        ]
+      },
+      "support_requests": {
+        ".indexOn": [
+          "user_id",
+          "status"
+        ]
+      },
+      "moderation_actions": {
+        ".indexOn": [
+          "moderator_id"
+        ]
+      },
+      "daily_questions": {
+        ".indexOn": [
+          "date_key"
+        ]
+      },
+      "challenges": {
+        ".indexOn": [
+          "status"
+        ]
+      }
+    },
+    "live": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false
+      },
+      "_all": {
+        ".read": "auth != null",
+        ".write": false
+      },
+      "_posts": {
+        ".read": "auth != null",
+        ".write": false
+      }
+    }
+  }
+}

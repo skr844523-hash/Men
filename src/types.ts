@@ -36,6 +36,7 @@ export interface BadgeItem {
 
 export interface User {
   id: number;
+  uid?: string;
   username: string;
   email: string | null;
   phone: string | null;

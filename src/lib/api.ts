@@ -1,13 +1,29 @@
-// Session Bearer token held strictly in memory (never localStorage/sessionStorage)
-// Cookie persistence across reloads is handled by HttpOnly SameSite=None cookie on the server.
-let memoryToken: string | null = null;
+// Auth is Firebase Auth. Every API call carries a fresh Firebase ID token as a Bearer
+// token (the SDK refreshes it automatically). Nothing is stored in localStorage by us.
+import { onAuthStateChanged, type User as FbUser } from 'firebase/auth';
+import { getFirebaseAuth, isFirebaseConfigured } from './firebase/config';
 
-export function setMemoryToken(token: string | null) {
-  memoryToken = token;
+let readyPromise: Promise<FbUser | null> | null = null;
+
+export function authReady(): Promise<FbUser | null> {
+  if (!isFirebaseConfigured) return Promise.resolve(null);
+  if (!readyPromise) {
+    const auth = getFirebaseAuth();
+    readyPromise = new Promise((resolve) => {
+      const off = onAuthStateChanged(auth, (u) => {
+        off();
+        resolve(u);
+      });
+    });
+  }
+  return readyPromise;
 }
 
-export function getMemoryToken(): string | null {
-  return memoryToken;
+export async function getIdToken(forceRefresh = false): Promise<string | null> {
+  await authReady();
+  if (!isFirebaseConfigured) return null;
+  const u = getFirebaseAuth().currentUser;
+  return u ? u.getIdToken(forceRefresh) : null;
 }
 
 export async function apiRequest<T>(
@@ -17,28 +33,28 @@ export async function apiRequest<T>(
     body?: unknown;
   } = {}
 ): Promise<T> {
-  const headers: Record<string, string> = {
-    'X-Requested-With': 'MEEN-App',
+  const headers: Record<string, string> = { 'X-Requested-With': 'MEEN-App' };
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  const send = async (force: boolean) => {
+    const token = await getIdToken(force);
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(`/api${path}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
   };
-  if (options.body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-  }
-  if (memoryToken) {
-    headers['Authorization'] = `Bearer ${memoryToken}`;
-  }
-
-  const res = await fetch(`/api${path}`, {
-    method: options.method || 'GET',
-    headers,
-    credentials: 'include',
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
-
+  let res = await send(false);
+  if (res.status === 401 && getFirebaseAuthSafe()?.currentUser) res = await send(true);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error((data as { error?: string }).error || 'حدث خطأ غير متوقع، حاول مرة أخرى.');
   }
   return data as T;
+}
+
+function getFirebaseAuthSafe() {
+  return isFirebaseConfigured ? getFirebaseAuth() : null;
 }
 
 export async function fileToDataUrl(file: File): Promise<string> {

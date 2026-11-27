@@ -13,7 +13,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
-import { apiRequest, setMemoryToken } from '../lib/api';
+import { apiRequest } from '../lib/api';
 import type { AppConfig, GlobalNotificationSettings, User } from '../types';
 
 interface AdminDashboardViewProps {
@@ -30,11 +30,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onToast,
 }) => {
   const [adminStatus, setAdminStatus] = useState<{
-    hasAdmin: boolean;
-    envPasscodeConfigured: boolean;
-    canBootstrap: boolean;
-    designatedAdminEmail?: string;
-    canPromoteCurrentUser?: boolean;
     isAdmin: boolean;
     isPrimaryAdmin?: boolean;
     isDesignatedAdmin?: boolean;
@@ -42,16 +37,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [tab, setTab] = useState<
     'overview' | 'notifications' | 'users' | 'content' | 'reports' | 'support' | 'app'
   >('overview');
-
-  // Bootstrap / Passcode form
-  const [passcode, setPasscode] = useState('');
-  const [bootName, setBootName] = useState('مدير مين؟');
-  const [bootUser, setBootUser] = useState('meen_admin');
-  const [bootEmail, setBootEmail] = useState('');
-  const [bootPass, setBootPass] = useState('');
-  const [bootConfirm, setBootConfirm] = useState('');
-  const [claimPassword, setClaimPassword] = useState('');
-  const [showBootPass, setShowBootPass] = useState(false);
 
   // Broadcast form
   const [broadcastTitle, setBroadcastTitle] = useState('تنبيه من إدارة مين؟');
@@ -107,9 +92,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     apiRequest<NonNullable<typeof adminStatus>>('/admin/status')
       .then((res) => {
         setAdminStatus(res);
-        if (res.designatedAdminEmail) {
-          setBootEmail(res.designatedAdminEmail);
-        }
       })
       .catch(() => {});
   }, []);
@@ -146,203 +128,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     loadAdminTab();
   }, [loadAdminTab]);
 
-  const handleBootstrap = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await apiRequest<{ token?: string; recoveryCode?: string }>('/admin/bootstrap', {
-        method: 'POST',
-        body: currentUser
-          ? { password: claimPassword }
-          : {
-              displayName: bootName,
-              username: bootUser,
-              email: bootEmail,
-              password: bootPass,
-              confirmPassword: bootConfirm,
-              birthDate: '1998-01-01',
-            },
-      });
-      if (res.token) setMemoryToken(res.token);
-      setClaimPassword('');
-      onToast(
-        res.recoveryCode
-          ? `تم إنشاء حساب الإدارة بنجاح! رمز الاستعادة: ${res.recoveryCode}`
-          : 'تمت ترقية حسابك كمسؤول للنظام.'
-      );
-      onRefreshSession();
-      loadStatus();
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : 'تعذر إعداد حساب الإدارة.');
-    }
-  };
-
-  const handleVerifyPasscode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      await apiRequest('/admin/verify-passcode', { method: 'POST', body: { passcode } });
-      onToast('تم التحقق من صلاحية الإدارة.');
-      onRefreshSession();
-      loadStatus();
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : 'رمز غير صحيح.');
-    }
-  };
-
   if (!adminStatus) {
     return <div className="h-44 rounded-2xl bg-white dark:bg-[#12121A] animate-pulse" />;
   }
 
-  // Not yet admin -> show First-Run Setup or Passcode gate or Access Denied
+  // Admin rights come only from the server (ADMIN_EMAIL signed in with Google, or a moderator
+  // appointed by that admin). There is no passcode or self-service promotion.
   if (!adminStatus.isAdmin) {
-    if (adminStatus.canBootstrap) {
-      const designatedEmail = adminStatus.designatedAdminEmail || 'غير محدد في إعدادات السيرفر';
-      return (
-        <div className="max-w-md mx-auto rounded-3xl bg-white dark:bg-[#12121A] border border-slate-200 dark:border-white/10 p-6 space-y-4">
-          <div className="flex items-center gap-2 text-violet-500">
-            <KeyRound className="w-5 h-5" />
-            <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-              تفعيل حساب الأدمن المعتمد
-            </h2>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
-            بوابة الإدارة مخصصة للبريد الإداري المعتمد{' '}
-            <span className="font-mono text-violet-400" dir="ltr">
-              {designatedEmail}
-            </span>
-            . أنشئ كلمة المرور الخاصة بك مباشرة هنا لتفعيل الصلاحية بأمان (يُغلق هذا الخيار تلقائيًا بعد التفعيل).
-          </p>
-
-          {currentUser && !adminStatus.canPromoteCurrentUser ? (
-            <div className="rounded-2xl bg-rose-500/10 border border-rose-500/30 p-4 text-xs text-rose-300 leading-relaxed">
-              أنت مسجل حاليًا بالبريد ({currentUser.email || currentUser.username}). لتفعيل الإدارة، سجّل الخروج ثم ادخل من هنا بحساب{' '}
-              <span className="font-mono" dir="ltr">
-                {designatedEmail}
-              </span>
-              .
-            </div>
-          ) : (
-            <form onSubmit={handleBootstrap} className="space-y-3">
-              {currentUser ? (
-                <>
-                  <p className="text-xs text-slate-300">
-                    تم التحقق من البريد الإداري ({designatedEmail}). أدخل كلمة مرور حسابك لتفعيل صلاحيات الأدمن:
-                  </p>
-                  <div className="relative">
-                    <input
-                      type={showBootPass ? 'text' : 'password'}
-                      required
-                      value={claimPassword}
-                      onChange={(e) => setClaimPassword(e.target.value)}
-                      placeholder="كلمة مرور الحساب"
-                      className="w-full min-h-[42px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 pl-10 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowBootPass((v) => !v)}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                      aria-label={showBootPass ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                    >
-                      {showBootPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <input
-                    type="text"
-                    required
-                    value={bootName}
-                    onChange={(e) => setBootName(e.target.value)}
-                    placeholder="الاسم المستعار"
-                    className="w-full min-h-[42px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 text-sm"
-                  />
-                  <input
-                    type="text"
-                    required
-                    dir="ltr"
-                    value={bootUser}
-                    onChange={(e) => setBootUser(e.target.value)}
-                    placeholder="admin_username"
-                    className="w-full min-h-[42px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 text-sm font-mono text-left"
-                  />
-                  <input
-                    type="email"
-                    required
-                    readOnly
-                    dir="ltr"
-                    value={bootEmail}
-                    className="w-full min-h-[42px] rounded-xl bg-slate-100 dark:bg-white/5 border border-violet-500/30 px-3 text-sm text-left text-violet-300 font-mono"
-                  />
-                  <div className="relative">
-                    <input
-                      type={showBootPass ? 'text' : 'password'}
-                      required
-                      value={bootPass}
-                      onChange={(e) => setBootPass(e.target.value)}
-                      placeholder="كلمة المرور التي تختارها (8 أحرف+)"
-                      className="w-full min-h-[42px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 pl-10 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowBootPass((v) => !v)}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                      aria-label={showBootPass ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                    >
-                      {showBootPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <input
-                    type={showBootPass ? 'text' : 'password'}
-                    required
-                    value={bootConfirm}
-                    onChange={(e) => setBootConfirm(e.target.value)}
-                    placeholder="تأكيد كلمة المرور"
-                    className="w-full min-h-[42px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 text-sm"
-                  />
-                </>
-              )}
-              <button
-                type="submit"
-                className="w-full min-h-[44px] rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold"
-              >
-                تفعيل صلاحيات الأدمن
-              </button>
-            </form>
-          )}
-        </div>
-      );
-    }
-
-    if (adminStatus.envPasscodeConfigured && currentUser) {
-      return (
-        <div className="max-w-md mx-auto rounded-3xl bg-white dark:bg-[#12121A] border border-slate-200 dark:border-white/10 p-6 space-y-4">
-          <h2 className="font-display text-lg font-bold">التحقق من رمز الإدارة</h2>
-          <form onSubmit={handleVerifyPasscode} className="space-y-3">
-            <input
-              type="password"
-              required
-              value={passcode}
-              onChange={(e) => setPasscode(e.target.value)}
-              placeholder="أدخل رمز الإدارة"
-              className="w-full min-h-[44px] rounded-xl bg-slate-50 dark:bg-[#09090D] border border-slate-200 dark:border-white/10 px-3 text-sm"
-            />
-            <button
-              type="submit"
-              className="w-full min-h-[44px] rounded-xl bg-violet-600 text-white text-sm font-semibold"
-            >
-              دخول لوحة الإدارة
-            </button>
-          </form>
-        </div>
-      );
-    }
-
     return (
-      <div className="rounded-3xl bg-white dark:bg-[#12121A] border border-rose-500/30 p-8 text-center space-y-2">
-        <ShieldAlert className="w-10 h-10 text-rose-500 mx-auto" />
-        <h2 className="font-display text-lg font-bold">وصول محظور</h2>
-        <p className="text-xs text-slate-400">
-          لوحة الإدارة مخصصة للمشرفين ومسؤولي النظام فقط.
+      <div className="max-w-md mx-auto rounded-3xl bg-white dark:bg-[#12121A] border border-slate-200 dark:border-white/10 p-6 space-y-3 text-center">
+        <KeyRound className="w-6 h-6 text-violet-500 mx-auto" />
+        <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">لوحة الإدارة</h2>
+        <p className="text-sm text-slate-500 dark:text-slate-300 leading-relaxed">
+          هذه الصفحة متاحة لحساب الإدارة المعتمد فقط. سجّل الدخول بحساب جوجل الخاص بالإدارة للوصول إليها.
         </p>
       </div>
     );
@@ -439,7 +237,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                   التحكم المركزي في التنبيهات الفورية وإشعارات الأنشطة لجميع مستخدمي مين؟ (متاح حصريًا للأدمن المعتمد:{' '}
                   <span className="font-mono text-violet-400" dir="ltr">
-                    {adminStatus.designatedAdminEmail || 'غير محدد في إعدادات السيرفر'}
+                    {currentUser?.email || 'حساب الإدارة'}
                   </span>
                   ).
                 </p>
@@ -463,7 +261,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <span>
                   تعديل إعدادات الإشعارات العامة للمنصة بالكامل مخصص فقط لحساب الأدمن المحدد (
                   <span className="font-mono" dir="ltr">
-                    {adminStatus.designatedAdminEmail || 'غير محدد في إعدادات السيرفر'}
+                    {currentUser?.email || 'حساب الإدارة'}
                   </span>
                   ).
                 </span>

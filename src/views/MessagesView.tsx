@@ -21,7 +21,6 @@ interface MessagesViewProps {
   initialConversationId: number | null;
   lastWsEvent: Record<string, unknown> | null;
   syncSignal?: number;
-  sendWsEvent?: (payload: Record<string, unknown>) => void;
   onUnreadRefresh: () => void;
   onOpenProfile: (username: string) => void;
   onToast: (msg: string) => void;
@@ -32,7 +31,6 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
   initialConversationId,
   lastWsEvent,
   syncSignal = 0,
-  sendWsEvent,
   onUnreadRefresh,
   onOpenProfile,
   onToast,
@@ -106,7 +104,6 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
         setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
         if (msg.senderId !== currentUser.id) {
           // Immediately mark read when recipient already has this conversation open
-          sendWsEvent?.({ type: 'message:mark_read', conversationId: selectedConvId });
           apiRequest(`/messages/conversations/${selectedConvId}/read`, { method: 'POST' })
             .then(() => {
               onUnreadRefresh();
@@ -140,7 +137,7 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
     ) {
       loadConversations();
     }
-  }, [lastWsEvent, selectedConvId, currentUser.id, sendWsEvent, loadConversations, onUnreadRefresh]);
+  }, [lastWsEvent, selectedConvId, currentUser.id, loadConversations, onUnreadRefresh]);
 
   const activeConv = conversations.find((c) => c.id === selectedConvId) || null;
 
@@ -567,9 +564,9 @@ export const MessagesView: React.FC<MessagesViewProps> = ({
                   setText(e.target.value);
                   if (selectedConvId && e.target.value.trim()) {
                     const now = Date.now();
-                    if (now - lastTypingSentRef.current > 1500) {
+                    if (now - lastTypingSentRef.current > 2000) {
                       lastTypingSentRef.current = now;
-                      sendWsEvent?.({ type: 'typing', conversationId: selectedConvId });
+                      apiRequest(`/messages/conversations/${selectedConvId}/typing`, { method: 'POST' }).catch(() => {});
                     }
                   }
                 }}

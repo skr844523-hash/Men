@@ -1,58 +1,26 @@
 # مين؟ MEEN
 
-منصة اجتماعية عربية للفضفضة والتواصل ومشاركة القصص والأسئلة والمجتمعات بأمان وخصوصية.
+React + Vite frontend, Express API on Firebase (Auth + Realtime Database), deployed on Vercel.
 
-## المتطلبات
+## Architecture
+- **Auth**: Firebase Auth (Google + Email/Password). The API verifies the Firebase ID token on every request (revocation checked). Username/phone login goes through `/api/auth/login`, which returns a custom token.
+- **Admin**: only the Google-verified `ADMIN_EMAIL` account becomes admin. It can appoint moderators. No passcode, no bootstrap, no self-promotion.
+- **Data**: Realtime Database under `t/<table>/<id>`, written only by the server (Admin SDK). `firebase/database.rules.json` denies all client access except the realtime channels `live/<uid>` (owner only), `live/_all`, `live/_posts` (read-only hints).
+- **Realtime**: clients listen to the `live/*` channels (replaces WebSockets).
+- **Images**: ImgBB (server-side, `IMGBB_API_KEY`). Voice notes are stored in the database (max ~600 KB) and served by `/api/media/:id`.
+- **Hosting**: Vercel. `api/index.js` is the single serverless function (bundle of `server/`), `dist/` is the static site.
 
-- **Node.js إصدار 22.5 أو أحدث** (قاعدة البيانات SQLite مدمجة في Node نفسه `node:sqlite`، فلا حاجة لأي خادم قاعدة بيانات خارجي). تحقق من الإصدار بأمر: `node --version`
+## Environment variables (Vercel > Settings > Environment Variables)
+See `.env.example`. Server-only: `FIREBASE_SERVICE_ACCOUNT_JSON`, `IMGBB_API_KEY`, `ADMIN_EMAIL`. The `VITE_FIREBASE_*` values are the public web config. Never commit secrets.
 
-## التشغيل محليًا (وضع التطوير)
+## Firebase console checklist
+1. Authentication > Sign-in method: enable Google and Email/Password.
+2. Authentication > Settings > Authorized domains: add the Vercel domain.
+3. Realtime Database > Rules: publish `firebase/database.rules.json` (`firebase deploy --only database`).
+4. Project settings > Service accounts: generate a key and paste the JSON into Vercel as `FIREBASE_SERVICE_ACCOUNT_JSON`.
 
-1. ثبّت الحزم:
-   ```
-   npm install
-   ```
-   (إذا ظهر خطأ تعارض حزم عندك في نسخة قديمة، استخدم `npm install --legacy-peer-deps` أو حدّث `package.json` لهذه النسخة.)
-2. شغّل التطبيق:
-   ```
-   npm run dev
-   ```
-3. افتح المتصفح على: `http://localhost:3000`
-
-ملاحظة مهمة: أمر `npm run preview` يعرض الواجهة فقط بدون الخادم، لذلك **لن يعمل** تسجيل الدخول أو إنشاء الحساب من خلاله. استخدم دائمًا `npm run dev` للتجربة، أو وضع الإنتاج الكامل بالأسفل.
-
-## إعداد حساب الإدارة (Admin)
-
-1. أنشئ ملف `.env` في جذر المشروع (انسخه من `.env.example`) وحدّد فيه:
-   ```
-   ADMIN_EMAIL=بريدك@example.com
-   SESSION_SECRET=سلسلة-عشوائية-طويلة-32-حرف-على-الأقل
-   ```
-2. أعد تشغيل الخادم، ثم سجّل حسابًا جديدًا **بنفس البريد** المكتوب في `ADMIN_EMAIL`.
-3. من صفحة الإدارة (Admin Dashboard) فعّل صلاحيات الإدارة بإدخال كلمة مرور حسابك.
-
-بدون ضبط `ADMIN_EMAIL` لن يستطيع أي شخص تفعيل لوحة الإدارة، وسيظهر تنبيه واضح بذلك.
-
-## وضع الإنتاج
-
-```
-npm run build
-SESSION_SECRET=... NODE_ENV=production npm start
-```
-
-- في وضع الإنتاج يرفض الخادم العمل بدون `SESSION_SECRET` بطول 32 حرفًا على الأقل.
-- اضبط `APP_URL` على رابط موقعك العام.
-- قاعدة البيانات تُحفظ في مجلد `data/` والملفات المرفوعة في `uploads/` — اجعلهما على تخزين دائم في الاستضافة.
-
-## متغيرات البيئة
-
-| المتغير | الوصف | إلزامي؟ |
-| --- | --- | --- |
-| `SESSION_SECRET` | سر توقيع الجلسات (32+ حرف) | إلزامي في الإنتاج |
-| `ADMIN_EMAIL` | البريد المعتمد لحساب الإدارة الأول | لتفعيل لوحة الإدارة |
-| `ADMIN_PASSCODE` | رمز إضافي اختياري لدخول لوحة الإدارة | اختياري |
-| `APP_URL` | الرابط العام للموقع | في الإنتاج |
-| `DATABASE_PATH` | مسار مخصص لملف قاعدة البيانات | اختياري |
-| `PORT` | منفذ الخادم (افتراضي 3000) | اختياري |
-
-ملاحظة: المشروع لا يحتاج `GEMINI_API_KEY` ولا أي مفتاح خارجي للتشغيل.
+## Scripts
+- `npm run dev` local server (needs `.env.local` and credentials or the emulators)
+- `npm run build` builds `dist/` and regenerates `api/index.js` (commit it)
+- `node scripts/gen-rules.mjs` regenerates the database rules (add an `.indexOn` for every new `where()` field)
+- `npm run test:api` runs the API/rules suites on the Firebase emulators; `bash scripts/browser/run.sh` style browser test is in `scripts/browser/`

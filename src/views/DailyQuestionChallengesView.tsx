@@ -149,9 +149,10 @@ export const DailyQuestionChallengesView: React.FC<DailyChallengeProps> = ({
               </button>
             </div>
             <h2 className="font-display text-xl sm:text-2xl font-bold leading-snug">
-              {shownQuestion?.questionText || 'جاري التحميل...'}
+              {shownQuestion?.questionText || (loading ? 'جاري التحميل...' : 'لم يُنشر سؤال اليوم بعد. تابعنا قريبًا.')}
             </h2>
 
+            {shownQuestion && (
             <form onSubmit={submitDailyAnswer} className="space-y-2.5 pt-2">
               <textarea
                 rows={2}
@@ -178,6 +179,7 @@ export const DailyQuestionChallengesView: React.FC<DailyChallengeProps> = ({
                 </button>
               </div>
             </form>
+            )}
           </div>
         </div>
 
@@ -264,6 +266,11 @@ export const DailyQuestionChallengesView: React.FC<DailyChallengeProps> = ({
         <div className="h-40 rounded-2xl bg-white dark:bg-[#12121A] animate-pulse" />
       ) : (
         <div className="space-y-4">
+          {challenges.length === 0 && (
+            <div className="rounded-2xl bg-white dark:bg-[#12121A] border border-slate-200 dark:border-white/10 p-8 text-center text-sm text-slate-500">
+              لا توجد تحديات حاليًا. سيتم الإعلان عن تحديات جديدة قريبًا.
+            </div>
+          )}
           {challenges.map((ch) => (
             <div
               key={ch.id}

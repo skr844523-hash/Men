@@ -1,3 +1,5 @@
+import { signOut } from 'firebase/auth';
+import { getFirebaseAuth } from '../lib/firebase/config';
 import React, { useEffect, useState } from 'react';
 import {
   Award,
@@ -52,6 +54,8 @@ const FAQ_ITEMS = [
     a: 'استخدم زر الإبلاغ فورًا أو قم بحظر المستخدم من ملفه الشخصي أو من داخل المحادثة، وسيقوم فريق الإشراف بمراجعة البلاغ.',
   },
 ];
+
+const signOutFirebase = () => signOut(getFirebaseAuth()).catch(() => {});
 
 export const SettingsHelpView: React.FC<SettingsHelpViewProps> = ({
   initialTab,
@@ -182,6 +186,8 @@ export const SettingsHelpView: React.FC<SettingsHelpViewProps> = ({
       setNewPass('');
       setConfPass('');
       onToast(res.message);
+      await signOutFirebase();
+      onLoggedOut();
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'تعذر تغيير كلمة المرور.');
     }
@@ -215,11 +221,13 @@ export const SettingsHelpView: React.FC<SettingsHelpViewProps> = ({
 
   const handleLogout = async () => {
     await apiRequest('/auth/logout', { method: 'POST' }).catch(() => {});
+    await signOutFirebase();
     onLoggedOut();
   };
 
   const handleLogoutAll = async () => {
     await apiRequest('/account/logout-all', { method: 'POST' }).catch(() => {});
+    await signOutFirebase();
     onLoggedOut();
   };
 
@@ -227,6 +235,7 @@ export const SettingsHelpView: React.FC<SettingsHelpViewProps> = ({
     e.preventDefault();
     try {
       await apiRequest('/account', { method: 'DELETE', body: { password: delPass } });
+      await signOutFirebase();
       onToast('تم حذف الحساب نهائيًا.');
       onLoggedOut();
     } catch (err) {
