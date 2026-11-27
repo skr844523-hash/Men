@@ -2,7 +2,7 @@
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { check, results, client, idTokenFromCustom } from './fb-test-lib.mjs';
-const handler = createRequire(import.meta.url)('../api/index.js');
+const handler = (await import('../api/index.js')).default;
 check('bundle exports a handler function', typeof handler === 'function');
 const server = http.createServer(handler).listen(0);
 const api = client(`http://127.0.0.1:${server.address().port}`);
