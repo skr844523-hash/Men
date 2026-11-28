@@ -1,3 +1,5 @@
+import { startPresence, stopPresence } from './lib/presence';
+import { setupNativePush, teardownNativePush, nativeSignOut } from './lib/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Award,
@@ -151,6 +153,13 @@ export default function App() {
       setVerifyMailState('error');
     }
   }, []);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    startPresence();
+    void setupNativePush();
+    return () => stopPresence();
+  }, [user?.uid]);
 
   const fetchMe = useCallback(async () => {
     try {
@@ -707,6 +716,8 @@ export default function App() {
               onToggleDarkMode={() => setDarkMode((d) => !d)}
               onUserUpdated={setUser}
               onLoggedOut={() => {
+                void teardownNativePush();
+                void nativeSignOut();
                 setUser(null);
                 setGuestMode(false);
                 setSection('home');

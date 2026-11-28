@@ -11,9 +11,14 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test": "node --import tsx --test src/lib/*.test.ts",
-    "test:api": "for f in auth social community messages admin rules security; do firebase emulators:exec --only auth,database --project men2-87abd \"node --import tsx scripts/fb-$f.test.mjs\" || exit 1; done"
+    "test:api": "for f in auth social community messages admin rules security push; do firebase emulators:exec --only auth,database --project men2-87abd \"node --import tsx scripts/fb-$f.test.mjs\" || exit 1; done"
   },
   "dependencies": {
+    "@capacitor-firebase/authentication": "^6.1.0",
+    "@capacitor-firebase/messaging": "^6.1.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/share": "^6.0.3",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",

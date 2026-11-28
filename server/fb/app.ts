@@ -5,6 +5,7 @@ import { socialRouter } from './routes/socialRoutes.ts';
 import { communityRouter } from './routes/communityRoutes.ts';
 import { messagesRouter } from './routes/messagesRoutes.ts';
 import { adminRouter } from './routes/adminRoutes.ts';
+import { pushRouter } from './routes/pushRoutes.ts';
 import { getMedia } from './media.ts';
 import { rtdb } from './admin.ts';
 import { get } from './store.ts';
@@ -49,6 +50,7 @@ export function createApi() {
   app.use('/api', communityRouter);
   app.use('/api', messagesRouter);
   app.use('/api', adminRouter);
+  app.use('/api', pushRouter);
   // more routers are mounted by ./routes as they are ported
   app.use('/api', (_req, res) => res.status(404).json({ error: 'المسار غير موجود.' }));
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

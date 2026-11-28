@@ -1,4 +1,5 @@
 import { rtdb } from './admin.ts';
+import { sendPushToUser } from './push.ts';
 import { get, insert, nowIso, where } from './store.ts';
 import { DEFAULT_NOTIFICATION_SETTINGS, areFriends, getSetting } from './core.ts';
 
@@ -77,5 +78,17 @@ export async function pushNotification(params: {
       isFriendActor, isAnonymousActor: Boolean(params.isAnonymousActor), isRead: false, createdAt,
     },
   });
+  // System push for devices that registered an FCM token (Android app).
+  // Best-effort: runs in the background and never delays or breaks the
+  // in-app notification above.
+  void sendPushToUser(params.userId, {
+    title: params.title,
+    body: params.body,
+    data: {
+      type: params.type,
+      targetType: String(params.targetType ?? ''),
+      targetId: String(params.targetId ?? ''),
+    },
+  }).catch(() => {});
 }
 export { where };

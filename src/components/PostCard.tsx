@@ -1,3 +1,4 @@
+import { shareNative } from '../lib/native';
 import React, { useEffect, useState } from 'react';
 import {
   Award,
@@ -145,6 +146,8 @@ export const PostCard: React.FC<PostCardProps> = ({
       });
       onUpdatePost({ ...post, sharesCount: res.sharesCount });
       const url = `${window.location.origin}/?post=${post.id}`;
+      const shared = await shareNative({ title: 'مين؟', text: post.content.slice(0, 120), url });
+      if (shared) return;
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(url).catch(() => {});
       }

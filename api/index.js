@@ -21280,7 +21280,7 @@ var require_application = __commonJS({
   "node_modules/express/lib/application.js"(exports, module) {
     "use strict";
     var finalhandler = require_finalhandler();
-    var Router6 = require_router();
+    var Router7 = require_router();
     var methods = require_methods();
     var middleware = require_init();
     var query = require_query();
@@ -21345,7 +21345,7 @@ var require_application = __commonJS({
     };
     app3.lazyrouter = function lazyrouter() {
       if (!this._router) {
-        this._router = new Router6({
+        this._router = new Router7({
           caseSensitive: this.enabled("case sensitive routing"),
           strict: this.enabled("strict routing")
         });
@@ -23209,7 +23209,7 @@ var require_express = __commonJS({
     var mixin = require_merge_descriptors();
     var proto = require_application();
     var Route = require_route();
-    var Router6 = require_router();
+    var Router7 = require_router();
     var req = require_request();
     var res = require_response();
     exports = module.exports = createApplication;
@@ -23232,7 +23232,7 @@ var require_express = __commonJS({
     exports.request = req;
     exports.response = res;
     exports.Route = Route;
-    exports.Router = Router6;
+    exports.Router = Router7;
     exports.json = bodyParser.json;
     exports.query = require_query();
     exports.raw = bodyParser.raw;
@@ -23423,7 +23423,7 @@ var init_store = __esm({
 });
 
 // server/fb/app.ts
-var import_express6 = __toESM(require_express2(), 1);
+var import_express7 = __toESM(require_express2(), 1);
 
 // server/fb/middleware.ts
 init_admin();
@@ -24580,6 +24580,53 @@ init_store();
 
 // server/fb/realtime.ts
 init_admin();
+
+// server/fb/push.ts
+init_admin();
+init_store();
+import { getMessaging } from "firebase-admin/messaging";
+var MAX_TOKENS_PER_USER = 5;
+async function registerPushToken(userId, token, platform) {
+  const u = await get("users", userId);
+  if (!u) return 0;
+  const tokens = Array.isArray(u.fcm_tokens) ? u.fcm_tokens.filter((t) => typeof t === "string") : [];
+  if (!tokens.includes(token)) tokens.push(token);
+  while (tokens.length > MAX_TOKENS_PER_USER) tokens.shift();
+  await patch("users", userId, { fcm_tokens: tokens, fcm_platform: platform });
+  return tokens.length;
+}
+async function unregisterPushToken(userId, token) {
+  const u = await get("users", userId);
+  if (!u || !Array.isArray(u.fcm_tokens)) return;
+  const next = u.fcm_tokens.filter((t) => t !== token);
+  if (next.length !== u.fcm_tokens.length) await patch("users", userId, { fcm_tokens: next });
+}
+async function sendPushToUser(userId, payload) {
+  try {
+    const u = await get("users", userId);
+    const tokens = Array.isArray(u?.fcm_tokens) ? u.fcm_tokens.filter((t) => typeof t === "string") : [];
+    if (!u || tokens.length === 0) return;
+    const res = await getMessaging(app).sendEachForMulticast({
+      tokens,
+      notification: { title: payload.title, body: payload.body },
+      data: payload.data,
+      android: { priority: "high", notification: { channelId: "meen_default" } }
+    });
+    const dead = [];
+    res.responses.forEach((r, i) => {
+      const code = r.error?.code || "";
+      if (code === "messaging/registration-token-not-registered" || code === "messaging/invalid-registration-token") {
+        dead.push(tokens[i]);
+      }
+    });
+    if (dead.length) {
+      await patch("users", userId, { fcm_tokens: tokens.filter((t) => !dead.includes(t)) });
+    }
+  } catch {
+  }
+}
+
+// server/fb/realtime.ts
 init_store();
 async function pushEvent(channel, payload) {
   const r = rtdb.ref(`live/${channel}`);
@@ -24658,6 +24705,16 @@ async function pushNotification(params) {
       isRead: false,
       createdAt
     }
+  });
+  void sendPushToUser(params.userId, {
+    title: params.title,
+    body: params.body,
+    data: {
+      type: params.type,
+      targetType: String(params.targetType ?? ""),
+      targetId: String(params.targetId ?? "")
+    }
+  }).catch(() => {
   });
 }
 
@@ -26353,14 +26410,39 @@ adminRouter.post("/admin/broadcast", requireStaff, requireAdminOnly, rateLimit("
   res.json({ ok: true, sentCount: users.length });
 });
 
+// server/fb/routes/pushRoutes.ts
+var import_express6 = __toESM(require_express2(), 1);
+init_store();
+var pushRouter = (0, import_express6.Router)();
+pushRouter.post("/push/register", requireAuth, rateLimitMemory("push-register", 20, 6e4), async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  if (token.length < 20 || token.length > 4096) {
+    res.status(400).json({ error: "\u0631\u0645\u0632 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062A \u063A\u064A\u0631 \u0635\u0627\u0644\u062D." });
+    return;
+  }
+  const platform = typeof req.body?.platform === "string" ? req.body.platform.slice(0, 20) : "android";
+  const tokens = await registerPushToken(req.user.id, token, platform);
+  res.json({ ok: true, tokens });
+});
+pushRouter.post("/push/unregister", requireAuth, rateLimitMemory("push-register", 20, 6e4), async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  if (token) await unregisterPushToken(req.user.id, token);
+  res.json({ ok: true });
+});
+pushRouter.post("/presence/ping", requireAuth, rateLimitMemory("presence-ping", 30, 6e4), async (req, res) => {
+  const active = req.body?.active !== false;
+  await patch("users", req.user.id, { last_active_at: active ? nowIso() : (/* @__PURE__ */ new Date(0)).toISOString() });
+  res.json({ ok: true });
+});
+
 // server/fb/app.ts
 init_admin();
 init_store();
 function createApi() {
-  const app3 = (0, import_express6.default)();
+  const app3 = (0, import_express7.default)();
   app3.disable("x-powered-by");
   app3.set("trust proxy", 1);
-  app3.use(import_express6.default.json({ limit: "6mb" }));
+  app3.use(import_express7.default.json({ limit: "6mb" }));
   app3.get("/api/health", async (_req, res) => {
     try {
       await rtdb.ref("live/_all").limitToFirst(1).get();
@@ -26390,6 +26472,7 @@ function createApi() {
   app3.use("/api", communityRouter);
   app3.use("/api", messagesRouter);
   app3.use("/api", adminRouter);
+  app3.use("/api", pushRouter);
   app3.use("/api", (_req, res) => res.status(404).json({ error: "\u0627\u0644\u0645\u0633\u0627\u0631 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F." }));
   app3.use((err, _req, res, _next) => {
     console.error("[MEEN] unhandled", err?.message || err);

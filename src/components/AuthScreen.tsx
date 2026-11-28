@@ -3,6 +3,7 @@ import { Eye, EyeOff, KeyRound, ShieldCheck, Upload, UserCheck, ArrowRight, Chec
 import { GoogleAuthProvider, signInWithCustomToken, signInWithPopup } from 'firebase/auth';
 import { apiRequest, uploadMediaFile } from '../lib/api';
 import { getFirebaseAuth } from '../lib/firebase/config';
+import { isNativeApp, nativeGoogleSignIn } from '../lib/native';
 import {
   checkMinimumAge,
   validateEmail,
@@ -125,13 +126,15 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setError('');
     setLoading(true);
     try {
-      const cred = await signInWithPopup(getFirebaseAuth(), new GoogleAuthProvider());
+      if (isNativeApp()) await nativeGoogleSignIn();
+      else await signInWithPopup(getFirebaseAuth(), new GoogleAuthProvider());
+      const fbUser = getFirebaseAuth().currentUser;
       const me = await apiRequest<{ user: User | null; needsProfile?: boolean }>('/auth/me');
       if (me.user) {
         onSuccess(me.user);
       } else {
-        setGoogleProfile({ email: cred.user.email || '', name: cred.user.displayName || '' });
-        setDisplayName((cred.user.displayName || '').slice(0, 40));
+        setGoogleProfile({ email: fbUser?.email || '', name: fbUser?.displayName || '' });
+        setDisplayName((fbUser?.displayName || '').slice(0, 40));
       }
     } catch (err) {
       const msg = authErrorMessage(err, 'تعذر تسجيل الدخول بجوجل.');
