@@ -6,7 +6,7 @@ import {
   adminCount, awardUserPoints, buildUserPayload, DEFAULT_AVATAR, DEFAULT_NOTIFICATION_SETTINGS,
   ensureCatalog, getSetting,
 } from '../core.ts';
-import { rateLimit, requireAuth } from '../middleware.ts';
+import { rateLimit, requireAuth, extractToken } from '../middleware.ts';
 import {
   checkContentSafety, checkMinimumAge, sanitizeMediaUrl, validateEmail, validatePassword,
   validatePhone, validateUsername,
@@ -36,6 +36,62 @@ async function verifyPasswordWithFirebase(email: string, password: string): Prom
 }
 
 const isAdminEmail = (email?: string | null) => Boolean(ADMIN_EMAIL) && String(email || '').toLowerCase() === ADMIN_EMAIL;
+
+// ---- Login brute-force protection -------------------------------------------------
+// A per-account counter, independent of the per-IP limiter: an attacker with a few
+// proxies can stay under 15/min per IP but must still not get unlimited guesses on
+// one account. Keyed by a hash so the node never holds a readable email or username.
+const LOGIN_MAX_FAILS = 8;
+const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const failKey = (identifier: string) => crypto.createHash('sha256').update(identifier).digest('hex').slice(0, 40);
+
+async function loginLockedUntil(identifier: string): Promise<number> {
+  try {
+    const s = await rtdb.ref(`authfails/${failKey(identifier)}`).get();
+    const v = s.exists() ? (s.val() as { locked_until?: number } | null) : null;
+    return Number(v?.locked_until || 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function recordLoginFailure(identifier: string): Promise<void> {
+  try {
+    await rtdb.ref(`authfails/${failKey(identifier)}`).transaction((v) => {
+      const now = Date.now();
+      const cur = v && typeof v === 'object' ? (v as { fails?: number; first_at?: number; locked_until?: number }) : null;
+      if (cur?.locked_until && now < cur.locked_until) return cur;
+      const stale = !cur?.first_at || now - Number(cur.first_at) > LOGIN_FAIL_WINDOW_MS;
+      const fails = stale ? 1 : Number(cur?.fails || 0) + 1;
+      const locked = fails >= LOGIN_MAX_FAILS;
+      return {
+        fails: locked ? 0 : fails,
+        first_at: stale ? now : Number(cur!.first_at),
+        locked_until: locked ? now + LOGIN_LOCK_MS : 0,
+        updated_at: now,
+      };
+    });
+  } catch {
+    // never block a login attempt because the counter failed
+  }
+}
+
+async function clearLoginFailures(identifier: string): Promise<void> {
+  await rtdb.ref(`authfails/${failKey(identifier)}`).remove().catch(() => {});
+}
+
+async function sendResetEmailQuietly(email: string): Promise<void> {
+  try {
+    await fetch(identityToolkitUrl('accounts:sendOobCode'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }),
+    });
+  } catch {
+    // the answer to the caller is identical either way
+  }
+}
 
 // Mirror DB role into custom claims so Realtime Database rules can read it.
 export async function syncClaims(uid: string, role: string) {
@@ -75,6 +131,7 @@ async function createProfile(params: {
     allow_anon_mentions: true,
     notify_prefs: { messages: true, comments: true, reactions: true, friends: true, communities: true, challenges: true, daily: true },
     is_premium: false,
+    email_verified: params.emailVerified,
   });
   await setUnique('uid', params.uid, row.id);
   await syncClaims(params.uid, role);
@@ -117,6 +174,11 @@ authRouter.get('/auth/me', async (req, res) => {
     await syncClaims(req.user.uid, req.user.role);
   }
   await patch('users', req.user.id, { last_active_at: nowIso() });
+  // Keep the stored flag in step with the verified Firebase token so the client can
+  // show the "confirm your email" banner without an extra round trip.
+  const verifiedNow = Boolean(req.fbToken?.email_verified);
+  const stored = await get<any>('users', req.user.id);
+  if (Boolean(stored?.email_verified) !== verifiedNow) await patch('users', req.user.id, { email_verified: verifiedNow });
   res.json({ user: await buildUserPayload(req.user.id), hasAdmin, appConfig: cfg });
 });
 
@@ -154,7 +216,7 @@ authRouter.post('/auth/register', rateLimit('register', 10, 60000), async (req, 
   if ('error' in parsed) return void res.status(400).json({ error: parsed.error });
   const v = parsed.value;
   const { password, confirmPassword } = req.body ?? {};
-  const passCheck = validatePassword(String(password || ''));
+  const passCheck = validatePassword(String(password || ''), { username: v.username, email: v.email ?? undefined });
   if (!passCheck.valid) return void res.status(400).json({ error: passCheck.error });
   if (password !== confirmPassword) return void res.status(400).json({ error: 'كلمتا المرور غير متطابقتين.' });
   // The admin address can only be claimed through Google (verified email), never by password sign-up.
@@ -167,7 +229,10 @@ authRouter.post('/auth/register', rateLimit('register', 10, 60000), async (req, 
   }
   if (!(await claimUnique('email', v.email!, 'pending'))) {
     await releaseUnique('username', v.username);
-    return void res.status(409).json({ error: 'البريد الإلكتروني مسجل مسبقًا.' });
+    // Do not confirm that this address is already registered. If it really belongs
+    // to someone, they get a password-reset mail and find out that way.
+    await sendResetEmailQuietly(v.email!);
+    return void res.status(409).json({ error: 'تعذر إنشاء الحساب بالبريد ده. لو عندك حساب بالفعل، سجّل الدخول أو استرجع كلمة المرور.' });
   }
   if (v.phone && !(await claimUnique('phone', v.phone, 'pending'))) {
     await releaseUnique('username', v.username);
@@ -242,9 +307,23 @@ authRouter.post('/auth/login', rateLimit('login', 15, 60000), async (req, res) =
   } else if (validateEmail(cleanId)) {
     email = cleanId; // e.g. an account that exists only in Firebase Auth
   }
+  // One counter per account, not per typed identifier, so switching between the
+  // username, the email and the phone number cannot reset the failure count.
+  const accountKey = user?.id != null ? `user:${user.id}` : `id:${cleanId}`;
+  const lockedUntil = await loginLockedUntil(accountKey);
+  if (lockedUntil > Date.now()) {
+    const mins = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 60000));
+    return void res.status(429).json({
+      error: `تم إيقاف محاولات الدخول لهذا الحساب مؤقتًا ${mins} دقيقة بعد محاولات فاشلة كثيرة. جرب بعدها، أو استرجع كلمة المرور.`,
+    });
+  }
   const uid = email ? await verifyPasswordWithFirebase(email, password) : null;
-  if (!uid) return void res.status(401).json({ error: 'بيانات تسجيل الدخول غير صحيحة.' });
+  if (!uid) {
+    await recordLoginFailure(accountKey);
+    return void res.status(401).json({ error: 'بيانات تسجيل الدخول غير صحيحة.' });
+  }
   if (user && user.status === 'banned') return void res.status(403).json({ error: 'تم حظر هذا الحساب لمخالفة قواعد المنصة.' });
+  await clearLoginFailures(accountKey);
   const customToken = await auth.createCustomToken(uid);
   res.json({ customToken });
 });
@@ -263,18 +342,25 @@ authRouter.post('/auth/recover', rateLimit('recover', 8, 60000), async (req, res
   let email: string | null = null;
   if (id != null && id !== 'pending') email = (await get<any>('users', id as number))?.email ?? null;
   else if (validateEmail(cleanId)) email = cleanId;
-  if (email) {
-    try {
-      await fetch(identityToolkitUrl('accounts:sendOobCode'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }),
-      });
-    } catch {
-      // answer is identical either way
-    }
-  }
+  if (email) await sendResetEmailQuietly(email);
   res.json({ ok: true, message: 'إذا كان الحساب موجودًا فسيصلك بريد لإعادة تعيين كلمة المرور.' });
+});
+
+// Sends the Firebase "confirm your email" mail. Needs the caller's own ID token,
+// which is why it is a server route rather than a client SDK call.
+authRouter.post('/auth/resend-verification', requireAuth, rateLimit('verify_email', 3, 600000), async (req, res) => {
+  if (req.user!.emailVerified) return void res.json({ ok: true, alreadyVerified: true });
+  try {
+    const r = await fetch(identityToolkitUrl('accounts:sendOobCode'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken: extractToken(req) }),
+    });
+    if (!r.ok) return void res.status(502).json({ error: 'تعذر إرسال رسالة التأكيد الآن، حاول بعد شوي.' });
+    res.json({ ok: true });
+  } catch {
+    res.status(502).json({ error: 'تعذر إرسال رسالة التأكيد الآن، حاول بعد شوي.' });
+  }
 });
 
 authRouter.patch('/account/profile', requireAuth, async (req, res) => {
@@ -357,7 +443,7 @@ authRouter.post('/account/password', requireAuth, rateLimit('change_password', 8
   const email = req.user!.email;
   const uid = email ? await verifyPasswordWithFirebase(email, String(currentPassword || '')) : null;
   if (!uid || uid !== req.user!.uid) return void res.status(401).json({ error: 'كلمة المرور الحالية غير صحيحة.' });
-  const check = validatePassword(String(newPassword || ''));
+  const check = validatePassword(String(newPassword || ''), { username: req.user!.username, email: email ?? undefined });
   if (!check.valid) return void res.status(400).json({ error: check.error });
   if (newPassword !== confirmPassword) return void res.status(400).json({ error: 'كلمتا المرور غير متطابقتين.' });
   await auth.updateUser(uid, { password: String(newPassword) });

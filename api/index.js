@@ -19380,14 +19380,14 @@ var require_etag = __commonJS({
   "node_modules/etag/index.js"(exports, module) {
     "use strict";
     module.exports = etag;
-    var crypto2 = __require("crypto");
+    var crypto3 = __require("crypto");
     var Stats = __require("fs").Stats;
     var toString = Object.prototype.toString;
     function entitytag(entity) {
       if (entity.length === 0) {
         return '"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"';
       }
-      var hash = crypto2.createHash("sha1").update(entity, "utf8").digest("base64").substring(0, 27);
+      var hash = crypto3.createHash("sha1").update(entity, "utf8").digest("base64").substring(0, 27);
       var len = typeof entity === "string" ? Buffer.byteLength(entity, "utf8") : entity.length;
       return '"' + len.toString(16) + "-" + hash + '"';
     }
@@ -22296,11 +22296,11 @@ var require_request = __commonJS({
 // node_modules/cookie-signature/index.js
 var require_cookie_signature = __commonJS({
   "node_modules/cookie-signature/index.js"(exports) {
-    var crypto2 = __require("crypto");
+    var crypto3 = __require("crypto");
     exports.sign = function(val, secret) {
       if ("string" !== typeof val) throw new TypeError("Cookie value must be provided as a string.");
       if (null == secret) throw new TypeError("Secret key must be provided.");
-      return val + "." + crypto2.createHmac("sha256", secret).update(val).digest("base64").replace(/\=+$/, "");
+      return val + "." + crypto3.createHmac("sha256", secret).update(val).digest("base64").replace(/\=+$/, "");
     };
     exports.unsign = function(val, secret) {
       if ("string" !== typeof val) throw new TypeError("Signed cookie string must be provided.");
@@ -22309,7 +22309,7 @@ var require_cookie_signature = __commonJS({
       return sha1(mac) == sha1(val) ? str : false;
     };
     function sha1(str) {
-      return crypto2.createHash("sha1").update(str).digest("hex");
+      return crypto3.createHash("sha1").update(str).digest("hex");
     }
   }
 });
@@ -23454,7 +23454,8 @@ async function attachAuth(req, _res, next) {
           role: u.role,
           status: u.status,
           displayName: u.display_name,
-          avatar: u.avatar
+          avatar: u.avatar,
+          emailVerified: Boolean(decoded.email_verified)
         };
       }
     }
@@ -23480,6 +23481,13 @@ function requireActiveAccount(req, res, next) {
   }
   if (req.user.status !== "active") {
     res.status(403).json({ error: "\u062D\u0633\u0627\u0628\u0643 \u0645\u0648\u0642\u0648\u0641 \u062D\u0627\u0644\u064A\u064B\u0627 \u0648\u0644\u0627 \u064A\u0645\u0643\u0646\u0643 \u0627\u0644\u0646\u0634\u0631 \u0623\u0648 \u0627\u0644\u062A\u0641\u0627\u0639\u0644." });
+    return;
+  }
+  if (!req.user.emailVerified) {
+    res.status(403).json({
+      error: "\u0623\u0643\u062F \u0628\u0631\u064A\u062F\u0643 \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A \u0623\u0648\u0644\u064B\u0627 \u0645\u0646 \u0627\u0644\u0625\u0639\u062F\u0627\u062F\u0627\u062A\u060C \u0648\u0628\u0639\u062F\u0647\u0627 \u062A\u0642\u062F\u0631 \u062A\u0646\u0634\u0631 \u0648\u062A\u062A\u0641\u0627\u0639\u0644.",
+      code: "email_not_verified"
+    });
     return;
   }
   next();
@@ -23509,6 +23517,11 @@ function rateLimit(bucket, maxRequests, windowMs) {
       const win = Math.floor(Date.now() / windowMs);
       const key = `${bucket}:${who}:${win}`.replace(/[.#$\[\]/]/g, "_");
       const r = await rtdb.ref(`ratelimits/${key}`).transaction((v) => (Number(v) || 0) + 1);
+      if (Number(r.snapshot.val()) === 1) {
+        const prevKey = `${bucket}:${who}:${win - 1}`.replace(/[.#$\[\]/]/g, "_");
+        void rtdb.ref(`ratelimits/${prevKey}`).remove().catch(() => {
+        });
+      }
       if (Number(r.snapshot.val()) > maxRequests) {
         res.status(429).json({ error: "\u062A\u0645 \u062A\u062C\u0627\u0648\u0632 \u0627\u0644\u062D\u062F \u0627\u0644\u0645\u0633\u0645\u0648\u062D \u0645\u0624\u0642\u062A\u064B\u0627. \u0627\u0646\u062A\u0638\u0631 \u0642\u0644\u064A\u0644\u064B\u0627 \u062B\u0645 \u062D\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649." });
         return;
@@ -23518,11 +23531,34 @@ function rateLimit(bucket, maxRequests, windowMs) {
     next();
   };
 }
+var memCounters = /* @__PURE__ */ new Map();
+function rateLimitMemory(bucket, maxRequests, windowMs) {
+  return (req, res, next) => {
+    const who = String(req.user?.id ?? req.headers["x-forwarded-for"] ?? req.ip ?? "anon").split(",")[0].trim();
+    const key = `${bucket}:${who}`;
+    const now = Date.now();
+    if (memCounters.size > 5e3) memCounters.clear();
+    const cur = memCounters.get(key);
+    if (!cur || now >= cur.resetAt) {
+      memCounters.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+    cur.count += 1;
+    if (cur.count > maxRequests) {
+      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((cur.resetAt - now) / 1e3))));
+      res.status(429).json({ error: "\u062A\u0645 \u062A\u062C\u0627\u0648\u0632 \u0627\u0644\u062D\u062F \u0627\u0644\u0645\u0633\u0645\u0648\u062D \u0645\u0624\u0642\u062A\u064B\u0627. \u0627\u0646\u062A\u0638\u0631 \u0642\u0644\u064A\u0644\u064B\u0627 \u062B\u0645 \u062D\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649." });
+      return;
+    }
+    next();
+  };
+}
 
 // server/fb/routes/authRoutes.ts
 var import_express = __toESM(require_express2(), 1);
 init_admin();
 init_store();
+import crypto2 from "node:crypto";
 
 // src/lib/gamification.ts
 var LEVELS = [
@@ -23793,6 +23829,7 @@ async function buildUserPayload(userId) {
     allowAnonMentions: Boolean(u.allow_anon_mentions),
     notifyPrefs,
     isPremium: Boolean(u.is_premium),
+    emailVerified: Boolean(u.email_verified),
     points,
     level,
     badges,
@@ -23834,12 +23871,75 @@ function validatePhone(phone) {
   const cleaned = phone.replace(/[\s\-()]/g, "");
   return /^\+?[0-9]{8,15}$/.test(cleaned);
 }
-function validatePassword(password) {
-  if (typeof password !== "string" || password.length < 8) {
-    return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u064A\u062C\u0628 \u0623\u0646 \u062A\u0643\u0648\u0646 8 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644." };
+var COMMON_PASSWORDS = /* @__PURE__ */ new Set([
+  "password",
+  "password1",
+  "password123",
+  "passw0rd",
+  "p@ssw0rd",
+  "p@ssword1",
+  "1234567890",
+  "12345678",
+  "123456789",
+  "0123456789",
+  "1111111111",
+  "qwerty1234",
+  "qwertyuiop",
+  "qwerty12345",
+  "iloveyou1",
+  "iloveyou12",
+  "admin12345",
+  "admin123456",
+  "administrator",
+  "welcome123",
+  "welcome1234",
+  "letmein123",
+  "abc123456",
+  "1q2w3e4r5t",
+  "aa12345678",
+  "asdfghjkl1",
+  "mohamed123",
+  "mohamed1234",
+  "ahmed12345",
+  "egypt12345",
+  "masr123456",
+  "football12",
+  "barcelona1",
+  "whatsapp12",
+  "instagram1",
+  "facebook12",
+  "changeme123",
+  "trustno1234",
+  "superman12",
+  "sunshine12",
+  "princess12",
+  "mohamed12345",
+  "ahmed123456",
+  "egypt123456",
+  "masr1234567",
+  "salah123456"
+]);
+function validatePassword(password, context = {}) {
+  if (typeof password !== "string" || password.length < 10) {
+    return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u064A\u062C\u0628 \u0623\u0646 \u062A\u0643\u0648\u0646 10 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644." };
   }
   if (password.length > 128) {
     return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u0637\u0648\u064A\u0644\u0629 \u062C\u062F\u064B\u0627." };
+  }
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) {
+    return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u062F\u064A \u0634\u0627\u0626\u0639\u0629 \u062C\u062F\u064B\u0627 \u0648\u0633\u0647\u0644\u0629 \u0627\u0644\u062A\u062E\u0645\u064A\u0646\u060C \u0627\u062E\u062A\u0631 \u0648\u0627\u062D\u062F\u0629 \u0623\u0642\u0648\u0649." };
+  }
+  const handle = String(context.username || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (handle.length >= 3 && password.toLowerCase().includes(handle)) {
+    return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u0644\u0627 \u064A\u062C\u0628 \u0623\u0646 \u062A\u062D\u062A\u0648\u064A \u0639\u0644\u0649 \u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645." };
+  }
+  const localPart = String(context.email || "").split("@")[0].trim().toLowerCase();
+  if (localPart.length >= 3 && password.toLowerCase().includes(localPart)) {
+    return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u0644\u0627 \u064A\u062C\u0628 \u0623\u0646 \u062A\u062D\u062A\u0648\u064A \u0639\u0644\u0649 \u0628\u0631\u064A\u062F\u0643 \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A." };
+  }
+  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(password)).length;
+  if (classes < 2) {
+    return { valid: false, error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u0644\u0627\u0632\u0645 \u062A\u062D\u062A\u0648\u064A \u0639\u0644\u0649 \u062D\u0631\u0648\u0641 \u0648\u0623\u0631\u0642\u0627\u0645 \u0623\u0648 \u0631\u0645\u0648\u0632\u060C \u0645\u0634 \u0646\u0648\u0639 \u0648\u0627\u062D\u062F \u0628\u0633." };
   }
   return { valid: true };
 }
@@ -23901,17 +24001,22 @@ function checkContentSafety(text, options = {}) {
   }
   return { safe: true };
 }
+var MEDIA_HOSTS = ["ibb.co", "googleusercontent.com"];
+function hostAllowed(hostname) {
+  const h = hostname.toLowerCase();
+  return MEDIA_HOSTS.some((allowed) => h === allowed || h.endsWith(`.${allowed}`));
+}
 function sanitizeMediaUrl(url) {
   if (!url || typeof url !== "string") return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith("/uploads/") || trimmed.startsWith("/src/assets/") || trimmed.startsWith("/")) {
+  if (trimmed.startsWith("/")) {
     if (trimmed.startsWith("//")) return null;
     return trimmed;
   }
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+    if (parsed.protocol === "https:" && hostAllowed(parsed.hostname)) {
       return parsed.toString();
     }
   } catch {
@@ -23922,6 +24027,78 @@ function sanitizeMediaUrl(url) {
 
 // server/fb/cascade.ts
 init_store();
+
+// server/fb/media.ts
+init_store();
+init_admin();
+import crypto from "node:crypto";
+var IMG_MAX = 3.5 * 1024 * 1024;
+var AUDIO_MAX = 600 * 1024;
+async function uploadMedia(dataUrl, userId) {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return { error: "\u0635\u064A\u063A\u0629 \u0627\u0644\u0645\u0644\u0641 \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645\u0629.", status: 400 };
+  const m = dataUrl.match(/^data:(image\/png|image\/jpeg|image\/webp|audio\/webm|audio\/ogg|audio\/mp4);base64,([A-Za-z0-9+/=]+)$/);
+  if (!m) return { error: "\u064A\u0633\u0645\u062D \u0628\u0631\u0641\u0639 \u0635\u0648\u0631 PNG/JPEG/WEBP \u0623\u0648 \u0645\u0642\u0627\u0637\u0639 \u0635\u0648\u062A\u064A\u0629 \u0642\u0635\u064A\u0631\u0629 \u0641\u0642\u0637.", status: 400 };
+  const mime = m[1];
+  const buf = Buffer.from(m[2], "base64");
+  const isImage = mime.startsWith("image/");
+  if (buf.length > (isImage ? IMG_MAX : AUDIO_MAX)) {
+    return { error: isImage ? "\u062D\u062C\u0645 \u0627\u0644\u0635\u0648\u0631\u0629 \u064A\u062A\u062C\u0627\u0648\u0632 \u0627\u0644\u062D\u062F \u0627\u0644\u0645\u0633\u0645\u0648\u062D (3.5 \u0645\u064A\u062C\u0627\u0628\u0627\u064A\u062A)." : "\u0627\u0644\u0645\u0642\u0637\u0639 \u0627\u0644\u0635\u0648\u062A\u064A \u0637\u0648\u064A\u0644 \u062C\u062F\u064B\u0627\u060C \u0627\u062C\u0639\u0644\u0647 \u0623\u0642\u0635\u0631.", status: 400 };
+  }
+  if (mime === "image/png" && !(buf.length >= 8 && buf[0] === 137 && buf[1] === 80 && buf[2] === 78 && buf[3] === 71)) return { error: "\u0645\u0644\u0641 PNG \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.", status: 400 };
+  if (mime === "image/jpeg" && !(buf.length >= 3 && buf[0] === 255 && buf[1] === 216 && buf[2] === 255)) return { error: "\u0645\u0644\u0641 JPEG \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.", status: 400 };
+  if (mime === "image/webp" && !(buf.length >= 12 && buf.subarray(0, 4).toString() === "RIFF" && buf.subarray(8, 12).toString() === "WEBP")) return { error: "\u0645\u0644\u0641 WEBP \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.", status: 400 };
+  if (!isImage) {
+    const id = crypto.randomUUID();
+    await put("media", id, { id, mime, data: m[2], owner: userId, created_at: nowIso() });
+    await rtdb.ref(`t/media_by_owner/${userId}/${id}`).set(true);
+    return { url: `/api/media/${id}` };
+  }
+  const key = process.env.IMGBB_API_KEY;
+  if (!key) return { error: "\u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631 \u063A\u064A\u0631 \u0645\u0641\u0639\u0651\u0644 \u062D\u0627\u0644\u064A\u064B\u0627.", status: 503 };
+  const form = new URLSearchParams();
+  form.set("image", m[2]);
+  const fetchImpl = globalThis.__imgbbFetch || fetch;
+  const r = await fetchImpl(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(key)}`, { method: "POST", body: form });
+  const j = await r.json().catch(() => ({}));
+  const url = j?.data?.display_url || j?.data?.url;
+  if (!r.ok || !j?.success || typeof url !== "string" || !/^https:\/\//.test(url)) {
+    return { error: "\u062A\u0639\u0630\u0631 \u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631\u0629 \u0627\u0644\u0622\u0646\u060C \u062D\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.", status: 502 };
+  }
+  return { url };
+}
+async function getMedia(id) {
+  if (!/^[0-9a-f-]{36}$/.test(id)) return null;
+  return get("media", id);
+}
+var MEDIA_PATH_RE = /^\/api\/media\/([0-9a-f-]{36})$/;
+async function attachMediaToConversation(mediaUrl, userId, conversationId) {
+  if (!mediaUrl) return;
+  const m = MEDIA_PATH_RE.exec(mediaUrl.trim());
+  if (!m) return;
+  const row = await getMedia(m[1]);
+  if (!row || Number(row.owner) !== userId) return;
+  await patch("media", m[1], { conversation_id: conversationId });
+}
+async function deleteMediaByUrl(mediaUrl) {
+  if (!mediaUrl) return;
+  const m = MEDIA_PATH_RE.exec(mediaUrl.trim());
+  if (!m) return;
+  const row = await getMedia(m[1]);
+  await remove("media", m[1]);
+  if (row?.owner != null) await rtdb.ref(`t/media_by_owner/${row.owner}/${m[1]}`).remove().catch(() => {
+  });
+}
+async function deleteMediaOwnedBy(userId) {
+  const s = await rtdb.ref(`t/media_by_owner/${userId}`).get();
+  if (!s.exists()) return;
+  for (const id of Object.keys(s.val())) {
+    await remove("media", id);
+    await rtdb.ref(`t/media_by_owner/${userId}/${id}`).remove().catch(() => {
+    });
+  }
+}
+
+// server/fb/cascade.ts
 var BY_FIELD = [
   ["posts", "author_id"],
   ["comments", "author_id"],
@@ -23953,11 +24130,15 @@ async function deleteUserData(userId) {
   }
   for (const field of ["user1_id", "user2_id"]) {
     for (const c of await where("conversations", field, userId)) {
-      for (const m of await where("messages", "conversation_id", c.id)) await remove("messages", m.id);
+      for (const m of await where("messages", "conversation_id", c.id)) {
+        await deleteMediaByUrl(m.media_url ?? null);
+        await remove("messages", m.id);
+      }
       await releaseUnique("conv", `${Math.min(c.user1_id, c.user2_id)}_${Math.max(c.user1_id, c.user2_id)}`);
       await remove("conversations", c.id);
     }
   }
+  await deleteMediaOwnedBy(userId);
   void all;
 }
 async function purgePost(postId) {
@@ -23976,47 +24157,6 @@ async function purgePost(postId) {
   const p = await get("posts", postId);
   if (p?.community_id) await bump("communities", p.community_id, "posts_count", -1);
   await remove("posts", postId);
-}
-
-// server/fb/media.ts
-init_store();
-import crypto from "node:crypto";
-var IMG_MAX = 3.5 * 1024 * 1024;
-var AUDIO_MAX = 600 * 1024;
-async function uploadMedia(dataUrl, userId) {
-  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return { error: "\u0635\u064A\u063A\u0629 \u0627\u0644\u0645\u0644\u0641 \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645\u0629.", status: 400 };
-  const m = dataUrl.match(/^data:(image\/png|image\/jpeg|image\/webp|audio\/webm|audio\/ogg|audio\/mp4);base64,([A-Za-z0-9+/=]+)$/);
-  if (!m) return { error: "\u064A\u0633\u0645\u062D \u0628\u0631\u0641\u0639 \u0635\u0648\u0631 PNG/JPEG/WEBP \u0623\u0648 \u0645\u0642\u0627\u0637\u0639 \u0635\u0648\u062A\u064A\u0629 \u0642\u0635\u064A\u0631\u0629 \u0641\u0642\u0637.", status: 400 };
-  const mime = m[1];
-  const buf = Buffer.from(m[2], "base64");
-  const isImage = mime.startsWith("image/");
-  if (buf.length > (isImage ? IMG_MAX : AUDIO_MAX)) {
-    return { error: isImage ? "\u062D\u062C\u0645 \u0627\u0644\u0635\u0648\u0631\u0629 \u064A\u062A\u062C\u0627\u0648\u0632 \u0627\u0644\u062D\u062F \u0627\u0644\u0645\u0633\u0645\u0648\u062D (3.5 \u0645\u064A\u062C\u0627\u0628\u0627\u064A\u062A)." : "\u0627\u0644\u0645\u0642\u0637\u0639 \u0627\u0644\u0635\u0648\u062A\u064A \u0637\u0648\u064A\u0644 \u062C\u062F\u064B\u0627\u060C \u0627\u062C\u0639\u0644\u0647 \u0623\u0642\u0635\u0631.", status: 400 };
-  }
-  if (mime === "image/png" && !(buf.length >= 8 && buf[0] === 137 && buf[1] === 80 && buf[2] === 78 && buf[3] === 71)) return { error: "\u0645\u0644\u0641 PNG \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.", status: 400 };
-  if (mime === "image/jpeg" && !(buf.length >= 3 && buf[0] === 255 && buf[1] === 216 && buf[2] === 255)) return { error: "\u0645\u0644\u0641 JPEG \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.", status: 400 };
-  if (mime === "image/webp" && !(buf.length >= 12 && buf.subarray(0, 4).toString() === "RIFF" && buf.subarray(8, 12).toString() === "WEBP")) return { error: "\u0645\u0644\u0641 WEBP \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.", status: 400 };
-  if (!isImage) {
-    const id = crypto.randomUUID();
-    await put("media", id, { id, mime, data: m[2], owner: userId, created_at: nowIso() });
-    return { url: `/api/media/${id}` };
-  }
-  const key = process.env.IMGBB_API_KEY;
-  if (!key) return { error: "\u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631 \u063A\u064A\u0631 \u0645\u0641\u0639\u0651\u0644 \u062D\u0627\u0644\u064A\u064B\u0627.", status: 503 };
-  const form = new URLSearchParams();
-  form.set("image", m[2]);
-  const fetchImpl = globalThis.__imgbbFetch || fetch;
-  const r = await fetchImpl(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(key)}`, { method: "POST", body: form });
-  const j = await r.json().catch(() => ({}));
-  const url = j?.data?.display_url || j?.data?.url;
-  if (!r.ok || !j?.success || typeof url !== "string" || !/^https:\/\//.test(url)) {
-    return { error: "\u062A\u0639\u0630\u0631 \u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631\u0629 \u0627\u0644\u0622\u0646\u060C \u062D\u0627\u0648\u0644 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.", status: 502 };
-  }
-  return { url };
-}
-async function getMedia(id) {
-  if (!/^[0-9a-f-]{36}$/.test(id)) return null;
-  return get("media", id);
 }
 
 // server/fb/routes/authRoutes.ts
@@ -24038,6 +24178,52 @@ async function verifyPasswordWithFirebase(email, password) {
   return j.localId || null;
 }
 var isAdminEmail = (email) => Boolean(ADMIN_EMAIL) && String(email || "").toLowerCase() === ADMIN_EMAIL;
+var LOGIN_MAX_FAILS = 8;
+var LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1e3;
+var LOGIN_LOCK_MS = 15 * 60 * 1e3;
+var failKey = (identifier) => crypto2.createHash("sha256").update(identifier).digest("hex").slice(0, 40);
+async function loginLockedUntil(identifier) {
+  try {
+    const s = await rtdb.ref(`authfails/${failKey(identifier)}`).get();
+    const v = s.exists() ? s.val() : null;
+    return Number(v?.locked_until || 0);
+  } catch {
+    return 0;
+  }
+}
+async function recordLoginFailure(identifier) {
+  try {
+    await rtdb.ref(`authfails/${failKey(identifier)}`).transaction((v) => {
+      const now = Date.now();
+      const cur = v && typeof v === "object" ? v : null;
+      if (cur?.locked_until && now < cur.locked_until) return cur;
+      const stale = !cur?.first_at || now - Number(cur.first_at) > LOGIN_FAIL_WINDOW_MS;
+      const fails = stale ? 1 : Number(cur?.fails || 0) + 1;
+      const locked = fails >= LOGIN_MAX_FAILS;
+      return {
+        fails: locked ? 0 : fails,
+        first_at: stale ? now : Number(cur.first_at),
+        locked_until: locked ? now + LOGIN_LOCK_MS : 0,
+        updated_at: now
+      };
+    });
+  } catch {
+  }
+}
+async function clearLoginFailures(identifier) {
+  await rtdb.ref(`authfails/${failKey(identifier)}`).remove().catch(() => {
+  });
+}
+async function sendResetEmailQuietly(email) {
+  try {
+    await fetch(identityToolkitUrl("accounts:sendOobCode"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestType: "PASSWORD_RESET", email })
+    });
+  } catch {
+  }
+}
 async function syncClaims(uid, role) {
   const user = await auth.getUser(uid);
   const claims = user.customClaims || {};
@@ -24070,7 +24256,8 @@ async function createProfile(params) {
     show_posts_to: "everyone",
     allow_anon_mentions: true,
     notify_prefs: { messages: true, comments: true, reactions: true, friends: true, communities: true, challenges: true, daily: true },
-    is_premium: false
+    is_premium: false,
+    email_verified: params.emailVerified
   });
   await setUnique("uid", params.uid, row.id);
   await syncClaims(params.uid, role);
@@ -24109,6 +24296,9 @@ authRouter.get("/auth/me", async (req, res) => {
     await syncClaims(req.user.uid, req.user.role);
   }
   await patch("users", req.user.id, { last_active_at: nowIso() });
+  const verifiedNow = Boolean(req.fbToken?.email_verified);
+  const stored = await get("users", req.user.id);
+  if (Boolean(stored?.email_verified) !== verifiedNow) await patch("users", req.user.id, { email_verified: verifiedNow });
   res.json({ user: await buildUserPayload(req.user.id), hasAdmin, appConfig: cfg });
 });
 function validateProfileInput(body) {
@@ -24142,7 +24332,7 @@ authRouter.post("/auth/register", rateLimit("register", 10, 6e4), async (req, re
   if ("error" in parsed) return void res.status(400).json({ error: parsed.error });
   const v = parsed.value;
   const { password, confirmPassword } = req.body ?? {};
-  const passCheck = validatePassword(String(password || ""));
+  const passCheck = validatePassword(String(password || ""), { username: v.username, email: v.email ?? void 0 });
   if (!passCheck.valid) return void res.status(400).json({ error: passCheck.error });
   if (password !== confirmPassword) return void res.status(400).json({ error: "\u0643\u0644\u0645\u062A\u0627 \u0627\u0644\u0645\u0631\u0648\u0631 \u063A\u064A\u0631 \u0645\u062A\u0637\u0627\u0628\u0642\u062A\u064A\u0646." });
   if (isAdminEmail(v.email)) {
@@ -24153,7 +24343,8 @@ authRouter.post("/auth/register", rateLimit("register", 10, 6e4), async (req, re
   }
   if (!await claimUnique("email", v.email, "pending")) {
     await releaseUnique("username", v.username);
-    return void res.status(409).json({ error: "\u0627\u0644\u0628\u0631\u064A\u062F \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A \u0645\u0633\u062C\u0644 \u0645\u0633\u0628\u0642\u064B\u0627." });
+    await sendResetEmailQuietly(v.email);
+    return void res.status(409).json({ error: "\u062A\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u062D\u0633\u0627\u0628 \u0628\u0627\u0644\u0628\u0631\u064A\u062F \u062F\u0647. \u0644\u0648 \u0639\u0646\u062F\u0643 \u062D\u0633\u0627\u0628 \u0628\u0627\u0644\u0641\u0639\u0644\u060C \u0633\u062C\u0651\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0623\u0648 \u0627\u0633\u062A\u0631\u062C\u0639 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631." });
   }
   if (v.phone && !await claimUnique("phone", v.phone, "pending")) {
     await releaseUnique("username", v.username);
@@ -24223,9 +24414,21 @@ authRouter.post("/auth/login", rateLimit("login", 15, 6e4), async (req, res) => 
   } else if (validateEmail(cleanId)) {
     email = cleanId;
   }
+  const accountKey = user?.id != null ? `user:${user.id}` : `id:${cleanId}`;
+  const lockedUntil = await loginLockedUntil(accountKey);
+  if (lockedUntil > Date.now()) {
+    const mins = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 6e4));
+    return void res.status(429).json({
+      error: `\u062A\u0645 \u0625\u064A\u0642\u0627\u0641 \u0645\u062D\u0627\u0648\u0644\u0627\u062A \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0647\u0630\u0627 \u0627\u0644\u062D\u0633\u0627\u0628 \u0645\u0624\u0642\u062A\u064B\u0627 ${mins} \u062F\u0642\u064A\u0642\u0629 \u0628\u0639\u062F \u0645\u062D\u0627\u0648\u0644\u0627\u062A \u0641\u0627\u0634\u0644\u0629 \u0643\u062B\u064A\u0631\u0629. \u062C\u0631\u0628 \u0628\u0639\u062F\u0647\u0627\u060C \u0623\u0648 \u0627\u0633\u062A\u0631\u062C\u0639 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631.`
+    });
+  }
   const uid = email ? await verifyPasswordWithFirebase(email, password) : null;
-  if (!uid) return void res.status(401).json({ error: "\u0628\u064A\u0627\u0646\u0627\u062A \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629." });
+  if (!uid) {
+    await recordLoginFailure(accountKey);
+    return void res.status(401).json({ error: "\u0628\u064A\u0627\u0646\u0627\u062A \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629." });
+  }
   if (user && user.status === "banned") return void res.status(403).json({ error: "\u062A\u0645 \u062D\u0638\u0631 \u0647\u0630\u0627 \u0627\u0644\u062D\u0633\u0627\u0628 \u0644\u0645\u062E\u0627\u0644\u0641\u0629 \u0642\u0648\u0627\u0639\u062F \u0627\u0644\u0645\u0646\u0635\u0629." });
+  await clearLoginFailures(accountKey);
   const customToken = await auth.createCustomToken(uid);
   res.json({ customToken });
 });
@@ -24240,17 +24443,22 @@ authRouter.post("/auth/recover", rateLimit("recover", 8, 6e4), async (req, res) 
   let email = null;
   if (id != null && id !== "pending") email = (await get("users", id))?.email ?? null;
   else if (validateEmail(cleanId)) email = cleanId;
-  if (email) {
-    try {
-      await fetch(identityToolkitUrl("accounts:sendOobCode"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestType: "PASSWORD_RESET", email })
-      });
-    } catch {
-    }
-  }
+  if (email) await sendResetEmailQuietly(email);
   res.json({ ok: true, message: "\u0625\u0630\u0627 \u0643\u0627\u0646 \u0627\u0644\u062D\u0633\u0627\u0628 \u0645\u0648\u062C\u0648\u062F\u064B\u0627 \u0641\u0633\u064A\u0635\u0644\u0643 \u0628\u0631\u064A\u062F \u0644\u0625\u0639\u0627\u062F\u0629 \u062A\u0639\u064A\u064A\u0646 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631." });
+});
+authRouter.post("/auth/resend-verification", requireAuth, rateLimit("verify_email", 3, 6e5), async (req, res) => {
+  if (req.user.emailVerified) return void res.json({ ok: true, alreadyVerified: true });
+  try {
+    const r = await fetch(identityToolkitUrl("accounts:sendOobCode"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestType: "VERIFY_EMAIL", idToken: extractToken(req) })
+    });
+    if (!r.ok) return void res.status(502).json({ error: "\u062A\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0631\u0633\u0627\u0644\u0629 \u0627\u0644\u062A\u0623\u0643\u064A\u062F \u0627\u0644\u0622\u0646\u060C \u062D\u0627\u0648\u0644 \u0628\u0639\u062F \u0634\u0648\u064A." });
+    res.json({ ok: true });
+  } catch {
+    res.status(502).json({ error: "\u062A\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0631\u0633\u0627\u0644\u0629 \u0627\u0644\u062A\u0623\u0643\u064A\u062F \u0627\u0644\u0622\u0646\u060C \u062D\u0627\u0648\u0644 \u0628\u0639\u062F \u0634\u0648\u064A." });
+  }
 });
 authRouter.patch("/account/profile", requireAuth, async (req, res) => {
   const userId = req.user.id;
@@ -24328,7 +24536,7 @@ authRouter.post("/account/password", requireAuth, rateLimit("change_password", 8
   const email = req.user.email;
   const uid = email ? await verifyPasswordWithFirebase(email, String(currentPassword || "")) : null;
   if (!uid || uid !== req.user.uid) return void res.status(401).json({ error: "\u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u0627\u0644\u062D\u0627\u0644\u064A\u0629 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629." });
-  const check = validatePassword(String(newPassword || ""));
+  const check = validatePassword(String(newPassword || ""), { username: req.user.username, email: email ?? void 0 });
   if (!check.valid) return void res.status(400).json({ error: check.error });
   if (newPassword !== confirmPassword) return void res.status(400).json({ error: "\u0643\u0644\u0645\u062A\u0627 \u0627\u0644\u0645\u0631\u0648\u0631 \u063A\u064A\u0631 \u0645\u062A\u0637\u0627\u0628\u0642\u062A\u064A\u0646." });
   await auth.updateUser(uid, { password: String(newPassword) });
@@ -24624,7 +24832,7 @@ async function loadVisiblePost(ctx, id) {
   if (!post || !await canViewPost(ctx, post) || ctx.uid && isBlocked(ctx, post.author_id)) return null;
   return post;
 }
-socialRouter.get("/posts", async (req, res) => {
+socialRouter.get("/posts", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const filter = String(req.query.filter || "latest");
   const category = String(req.query.category || "");
@@ -24636,7 +24844,8 @@ socialRouter.get("/posts", async (req, res) => {
   const limit = Number.isFinite(rawLimit) ? Math.min(30, Math.max(1, Math.trunc(rawLimit))) : 15;
   const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
   const allowedTypes = /* @__PURE__ */ new Set(["post", "confession", "question", "poll", "challenge_entry"]);
-  const recent = await lastN("posts", 400);
+  const windowSize = Math.min(200, Math.max(60, offset + limit * 4));
+  const recent = await lastN("posts", windowSize);
   const rows = recent.filter((p) => p.is_hidden !== 1).filter((p) => !(type && allowedTypes.has(type)) || p.type === type).filter((p) => !category || category === "\u0627\u0644\u0643\u0644" || p.category === category).filter((p) => !moodType || moodType === "\u0627\u0644\u0643\u0644" || p.mood_type === moodType).filter((p) => !communityId || p.community_id === communityId).filter((p) => !ctx.uid || !isBlocked(ctx, p.author_id)).slice(0, 120);
   const visibleRows = [];
   for (const r of rows) if (await canViewPost(ctx, r)) visibleRows.push(r);
@@ -24657,7 +24866,7 @@ socialRouter.get("/posts", async (req, res) => {
   const total = visible.length;
   res.json({ items: visible.slice(offset, offset + limit), total, hasMore: offset + limit < total });
 });
-socialRouter.get("/posts/:id", async (req, res) => {
+socialRouter.get("/posts/:id", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const post = await loadVisiblePost(ctx, num(req.params.id));
   if (!post) return void res.status(404).json({ error: "\u0627\u0644\u0645\u0646\u0634\u0648\u0631 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F \u0623\u0648 \u063A\u064A\u0631 \u0645\u062A\u0627\u062D \u0644\u0644\u0639\u0631\u0636." });
@@ -24839,7 +25048,7 @@ socialRouter.get("/saved", requireAuth, async (req, res) => {
   res.json({ items });
 });
 var authorView = (u) => ({ id: u.id, username: u.username, displayName: u.display_name, avatar: u.avatar });
-socialRouter.get("/posts/:id/comments", async (req, res) => {
+socialRouter.get("/posts/:id/comments", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const postId = num(req.params.id);
   const ctx = await buildCtx(req.user?.id ?? null);
   if (!await loadVisiblePost(ctx, postId)) return void res.status(404).json(NOT_FOUND_POST);
@@ -24974,7 +25183,7 @@ async function usernameToId(username) {
   const id = await lookupUnique2("username", username);
   return id != null && id !== "pending" ? Number(id) : null;
 }
-socialRouter.get("/users/:username", async (req, res) => {
+socialRouter.get("/users/:username", rateLimitMemory("read", 120, 6e4), async (req, res) => {
   const handle = String(req.params.username).trim().toLowerCase().replace(/^@+/, "");
   const ctx = await buildCtx(req.user?.id ?? null);
   const targetId = await usernameToId(handle);
@@ -25026,7 +25235,7 @@ socialRouter.get("/users/:username", async (req, res) => {
       friendStatus,
       isFollowing,
       allowMessagesFrom: row.allow_messages_from,
-      lastActiveAt: row.show_activity ? row.last_active_at : null,
+      lastActiveAt: row.show_activity && (isSelf || isFriend) ? row.last_active_at : null,
       createdAt: row.created_at,
       friendsCount,
       followersCount: followers.length,
@@ -25194,7 +25403,7 @@ socialRouter.post("/notifications/read-all", requireAuth, async (req, res) => {
   await Promise.all(rows.filter((n) => !n.is_read).map((n) => patch("notifications", n.id, { is_read: 1 })));
   res.json({ ok: true });
 });
-socialRouter.post("/support", rateLimit("support", 6, 6e4), async (req, res) => {
+socialRouter.post("/support", requireAuth, rateLimit("support", 6, 6e4), async (req, res) => {
   const { category, subject, description, imageUrl } = req.body ?? {};
   const s = String(subject || "").trim();
   const d = String(description || "").trim();
@@ -25202,7 +25411,7 @@ socialRouter.post("/support", rateLimit("support", 6, 6e4), async (req, res) => 
   const safety = checkContentSafety(d, { allowContactInfo: true });
   if (!safety.safe) return void res.status(400).json({ error: safety.reason });
   const row = await insert("support_requests", {
-    user_id: req.user?.id ?? 0,
+    user_id: req.user.id,
     category: String(category || "\u0623\u062E\u0631\u0649").slice(0, 80),
     subject: s.slice(0, 150),
     description: d.slice(0, 2e3),
@@ -25224,7 +25433,22 @@ init_admin();
 init_store();
 var communityRouter = (0, import_express3.Router)();
 var num2 = (v) => Number(v);
-communityRouter.get("/questions/:postId/answers", async (req, res) => {
+var READ_CACHE_TTL_MS = 3e4;
+var readCache = /* @__PURE__ */ new Map();
+function cacheGet(key) {
+  const e = readCache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > READ_CACHE_TTL_MS) {
+    readCache.delete(key);
+    return null;
+  }
+  return e.value;
+}
+function cacheSet(key, value) {
+  if (readCache.size > 200) readCache.clear();
+  readCache.set(key, { at: Date.now(), value });
+}
+communityRouter.get("/questions/:postId/answers", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const postId = num2(req.params.postId);
   const ctx = await buildCtx(req.user?.id ?? null);
   const post = await get("posts", postId);
@@ -25349,7 +25573,7 @@ async function allCommunities() {
   const { all: all2 } = await Promise.resolve().then(() => (init_store(), store_exports));
   return (await all2("communities")).filter((c) => c.is_hidden !== 1);
 }
-communityRouter.get("/communities", async (req, res) => {
+communityRouter.get("/communities", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const q = String(req.query.q || "").trim().toLowerCase();
   const category = String(req.query.category || "");
@@ -25399,7 +25623,7 @@ communityRouter.post("/communities", requireActiveAccount, rateLimit("community"
     throw e;
   }
 });
-communityRouter.get("/communities/:id", async (req, res) => {
+communityRouter.get("/communities/:id", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const communityId = num2(req.params.id);
   const ctx = await buildCtx(req.user?.id ?? null);
   const comm = await get("communities", communityId);
@@ -25419,13 +25643,14 @@ communityRouter.get("/communities/:id", async (req, res) => {
     const mineP = (await where("posts", "community_id", communityId)).filter((p) => p.is_hidden !== 1).sort((a, b) => b.id - a.id).slice(0, 60);
     for (const p of mineP) if (await canViewPost(ctx, p)) posts.push(await serializePost(ctx, p));
   }
+  const visibleMembers = canSee ? members : [];
   res.json({
     community: {
       ...commView({ ...comm, members_count: members.length }),
       isMember: Boolean(mine),
       myRole: mine?.role ?? null,
-      moderators: members.filter((m) => m.role === "owner" || m.role === "moderator"),
-      members,
+      moderators: visibleMembers.filter((m) => m.role === "owner" || m.role === "moderator"),
+      members: visibleMembers,
       posts
     }
   });
@@ -25485,7 +25710,7 @@ communityRouter.delete("/communities/:id/members/:userId", requireAuth, async (r
   await bump("communities", communityId, "members_count", -1);
   res.json({ ok: true });
 });
-communityRouter.get("/daily-question", async (req, res) => {
+communityRouter.get("/daily-question", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const { all: all2 } = await Promise.resolve().then(() => (init_store(), store_exports));
   const qs = (await all2("daily_questions")).sort((a, b) => b.id - a.id);
@@ -25535,7 +25760,7 @@ communityRouter.post("/daily-question/:id/answer", requireActiveAccount, rateLim
   await awardUserPoints(userId, "daily_question", post.id, clean2);
   res.status(201).json({ post: await serializePost(await buildCtx(userId), post) });
 });
-communityRouter.get("/challenges", async (req, res) => {
+communityRouter.get("/challenges", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const { all: all2 } = await Promise.resolve().then(() => (init_store(), store_exports));
   const chs = (await all2("challenges")).sort((a, b) => Number(a.status !== "active") - Number(b.status !== "active") || String(b.created_at).localeCompare(String(a.created_at)));
@@ -25611,19 +25836,27 @@ var topicsOf = (posts) => {
   return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 };
 var userBrief = (u) => ({ id: u.id, username: u.username, display_name: u.display_name, avatar: u.avatar, bio: u.bio || "" });
-communityRouter.get("/explore", async (req, res) => {
+communityRouter.get("/explore", rateLimitMemory("read", 120, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const q = String(req.query.q || "").trim();
   const filter = String(req.query.filter || "all");
+  const cacheKey = ctx.uid ? null : `explore:${q}:${filter}`;
+  if (cacheKey) {
+    const hit = cacheGet(cacheKey);
+    if (hit) return void res.json(hit);
+  }
   const categories = await getSetting("categories", []);
   const visiblePosts = await visibleRecent(ctx, 120);
   const trendingPosts = [...visiblePosts].sort((a, b) => b.trendingScore - a.trendingScore);
   const comms = (await allCommunities()).sort((a, b) => Number(b.members_count || 0) - Number(a.members_count || 0)).slice(0, 12).map(commView);
-  const { lastN: lastUsers } = await Promise.resolve().then(() => (init_store(), store_exports));
-  const users = (await lastUsers("users", 200)).filter((u) => u.status === "active");
+  let users = [];
+  if (ctx.uid) {
+    const { lastN: lastUsers } = await Promise.resolve().then(() => (init_store(), store_exports));
+    users = (await lastUsers("users", 200)).filter((u) => u.status === "active");
+  }
   const suggestedUsers = users.filter((u) => u.privacy_level === "public" && u.id !== ctx.uid).sort((a, b) => String(b.last_active_at).localeCompare(String(a.last_active_at))).slice(0, 12).map(userBrief);
   if (!q) {
-    return void res.json({
+    const payload2 = {
       categories,
       trendingTopics: topicsOf(visiblePosts),
       trendingPosts: trendingPosts.slice(0, 10),
@@ -25631,25 +25864,36 @@ communityRouter.get("/explore", async (req, res) => {
       popularQuestions: trendingPosts.filter((p) => p.type === "question").slice(0, 6),
       activeCommunities: comms,
       suggestedUsers
-    });
+    };
+    if (cacheKey) cacheSet(cacheKey, payload2);
+    return void res.json(payload2);
   }
   const lq = q.toLowerCase();
-  const matchedUsers = filter === "all" || filter === "users" ? users.filter((u) => u.privacy_level !== "limited" && (String(u.username).toLowerCase().includes(lq) || String(u.display_name).toLowerCase().includes(lq))).slice(0, 25).map(userBrief) : [];
+  const matchedUsers = ctx.uid && (filter === "all" || filter === "users") ? users.filter((u) => u.privacy_level !== "limited" && (String(u.username).toLowerCase().includes(lq) || String(u.display_name).toLowerCase().includes(lq))).slice(0, 25).map(userBrief) : [];
   const matchedPosts = filter === "all" || filter === "posts" || filter === "categories" ? visiblePosts.filter((p) => p.content.toLowerCase().includes(lq) || p.category.toLowerCase().includes(lq) || p.moodType && p.moodType.toLowerCase().includes(lq)) : [];
   const matchedComms = filter === "all" || filter === "communities" ? comms.filter((c) => [c.name, c.description, c.category].some((s) => String(s).toLowerCase().includes(lq))) : [];
-  res.json({ query: q, users: matchedUsers, posts: matchedPosts, communities: matchedComms, categories: categories.filter((c) => c.toLowerCase().includes(lq)) });
+  const payload = { query: q, users: matchedUsers, posts: matchedPosts, communities: matchedComms, categories: categories.filter((c) => c.toLowerCase().includes(lq)) };
+  if (cacheKey) cacheSet(cacheKey, payload);
+  res.json(payload);
 });
-communityRouter.get("/trending", async (req, res) => {
+communityRouter.get("/trending", rateLimitMemory("read", 180, 6e4), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
+  const cacheKey = ctx.uid ? null : "trending:anon";
+  if (cacheKey) {
+    const hit = cacheGet(cacheKey);
+    if (hit) return void res.json(hit);
+  }
   const ranked = (await visibleRecent(ctx, 150)).sort((a, b) => b.trendingScore - a.trendingScore);
   const communities = (await allCommunities()).sort((a, b) => Number(b.posts_count || 0) * 2 + Number(b.members_count || 0) - (Number(a.posts_count || 0) * 2 + Number(a.members_count || 0))).slice(0, 10).map(commView);
-  res.json({
+  const payload = {
     posts: ranked.filter((p) => p.type === "post" || p.type === "confession").slice(0, 20),
     questions: ranked.filter((p) => p.type === "question").slice(0, 15),
     polls: ranked.filter((p) => p.type === "poll").slice(0, 15),
     communities,
     topics: topicsOf(ranked)
-  });
+  };
+  if (cacheKey) cacheSet(cacheKey, payload);
+  res.json(payload);
 });
 
 // server/fb/routes/messagesRoutes.ts
@@ -25673,7 +25917,7 @@ async function markRead(convId, userId) {
   await Promise.all(unread.map((m) => patch("messages", m.id, { status: "read" })));
   return unread.length;
 }
-messagesRouter.get("/messages/conversations", requireAuth, async (req, res) => {
+messagesRouter.get("/messages/conversations", rateLimitMemory("read", 200, 6e4), requireAuth, async (req, res) => {
   const userId = req.user.id;
   const q = String(req.query.q || "").trim().toLowerCase();
   const ctx = await buildCtx(userId);
@@ -25740,7 +25984,7 @@ messagesRouter.post("/messages/conversations/:id/respond", requireAuth, async (r
   await sendToUser(conv.user1_id, { type: "conversation:updated", conversationId: convId });
   res.json({ ok: true, status: next });
 });
-messagesRouter.get("/messages/conversations/:id", requireAuth, async (req, res) => {
+messagesRouter.get("/messages/conversations/:id", rateLimitMemory("read", 200, 6e4), requireAuth, async (req, res) => {
   const convId = num3(req.params.id);
   const userId = req.user.id;
   const conv = await myConv(convId, userId);
@@ -25827,6 +26071,7 @@ messagesRouter.post("/messages/conversations/:id", requireActiveAccount, rateLim
     deleted_by_sender: 0,
     created_at: createdAt
   });
+  if (media) await attachMediaToConversation(media, userId, convId);
   await patch("conversations", convId, { last_message_at: createdAt });
   const payload = {
     id: m.id,
@@ -25859,6 +26104,7 @@ messagesRouter.delete("/messages/:messageId", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const msg = await get("messages", msgId);
   if (!msg || msg.sender_id !== userId) return void res.status(403).json({ error: "\u064A\u0645\u0643\u0646\u0643 \u062D\u0630\u0641 \u0631\u0633\u0627\u0626\u0644\u0643 \u0641\u0642\u0637." });
+  await deleteMediaByUrl(msg.media_url ?? null);
   await patch("messages", msgId, { deleted_by_sender: 1, content: "", media_url: null });
   const conv = await get("conversations", msg.conversation_id);
   if (conv) await sendToUser(peerOf(conv, userId), { type: "message:deleted", conversationId: msg.conversation_id, messageId: msgId });
@@ -26109,6 +26355,7 @@ adminRouter.post("/admin/broadcast", requireStaff, requireAdminOnly, rateLimit("
 
 // server/fb/app.ts
 init_admin();
+init_store();
 function createApi() {
   const app3 = (0, import_express6.default)();
   app3.disable("x-powered-by");
@@ -26122,15 +26369,22 @@ function createApi() {
       res.status(503).json({ ok: false, database: "error" });
     }
   });
-  app3.get("/api/media/:id", async (req, res) => {
+  app3.use("/api", attachAuth);
+  app3.get("/api/media/:id", requireAuth, async (req, res) => {
     const m = await getMedia(String(req.params.id));
     if (!m) return void res.status(404).end();
+    const uid = req.user.id;
+    let allowed = Number(m.owner) === uid;
+    if (!allowed && m.conversation_id) {
+      const conv = await get("conversations", Number(m.conversation_id));
+      allowed = Boolean(conv && (conv.user1_id === uid || conv.user2_id === uid));
+    }
+    if (!allowed) return void res.status(403).json({ error: "\u063A\u064A\u0631 \u0645\u0635\u0631\u062D \u0628\u0627\u0644\u0648\u0635\u0648\u0644 \u0644\u0647\u0630\u0627 \u0627\u0644\u0645\u0644\u0641." });
     res.setHeader("Content-Type", m.mime);
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.setHeader("Cache-Control", "private, no-store");
     res.send(Buffer.from(m.data, "base64"));
   });
-  app3.use("/api", attachAuth);
   app3.use("/api", authRouter);
   app3.use("/api", socialRouter);
   app3.use("/api", communityRouter);

@@ -42,6 +42,7 @@ export interface User {
   phone: string | null;
   role: 'user' | 'moderator' | 'admin';
   status: 'active' | 'suspended' | 'banned';
+  emailVerified?: boolean;
   createdAt: string;
   displayName: string;
   avatar: string;

@@ -37,12 +37,44 @@ export function validatePhone(phone: string): boolean {
   return /^\+?[0-9]{8,15}$/.test(cleaned);
 }
 
-export function validatePassword(password: string): { valid: boolean; error?: string } {
-  if (typeof password !== 'string' || password.length < 8) {
-    return { valid: false, error: 'كلمة المرور يجب أن تكون 8 أحرف على الأقل.' };
+// The most-guessed passwords. Kept short on purpose: the length and character
+// rules do most of the work, this only blocks the obvious ones.
+const COMMON_PASSWORDS = new Set([
+  'password', 'password1', 'password123', 'passw0rd', 'p@ssw0rd', 'p@ssword1',
+  '1234567890', '12345678', '123456789', '0123456789', '1111111111',
+  'qwerty1234', 'qwertyuiop', 'qwerty12345', 'iloveyou1', 'iloveyou12',
+  'admin12345', 'admin123456', 'administrator', 'welcome123', 'welcome1234',
+  'letmein123', 'abc123456', '1q2w3e4r5t', 'aa12345678', 'asdfghjkl1',
+  'mohamed123', 'mohamed1234', 'ahmed12345', 'egypt12345', 'masr123456',
+  'football12', 'barcelona1', 'whatsapp12', 'instagram1', 'facebook12',
+  'changeme123', 'trustno1234', 'superman12', 'sunshine12', 'princess12',
+  'mohamed12345', 'ahmed123456', 'egypt123456', 'masr1234567', 'salah123456',
+]);
+
+export function validatePassword(
+  password: string,
+  context: { username?: string; email?: string } = {}
+): { valid: boolean; error?: string } {
+  if (typeof password !== 'string' || password.length < 10) {
+    return { valid: false, error: 'كلمة المرور يجب أن تكون 10 أحرف على الأقل.' };
   }
   if (password.length > 128) {
     return { valid: false, error: 'كلمة المرور طويلة جدًا.' };
+  }
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) {
+    return { valid: false, error: 'كلمة المرور دي شائعة جدًا وسهلة التخمين، اختر واحدة أقوى.' };
+  }
+  const handle = String(context.username || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (handle.length >= 3 && password.toLowerCase().includes(handle)) {
+    return { valid: false, error: 'كلمة المرور لا يجب أن تحتوي على اسم المستخدم.' };
+  }
+  const localPart = String(context.email || '').split('@')[0].trim().toLowerCase();
+  if (localPart.length >= 3 && password.toLowerCase().includes(localPart)) {
+    return { valid: false, error: 'كلمة المرور لا يجب أن تحتوي على بريدك الإلكتروني.' };
+  }
+  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((re) => re.test(password)).length;
+  if (classes < 2) {
+    return { valid: false, error: 'كلمة المرور لازم تحتوي على حروف وأرقام أو رموز، مش نوع واحد بس.' };
   }
   return { valid: true };
 }
@@ -112,17 +144,26 @@ export function checkContentSafety(
   return { safe: true };
 }
 
+// Only our own paths and the two hosts we actually produce media on. Anything
+// else (an avatar or a post image hosted on someone's own server) is an IP
+// tracking pixel aimed at everyone who scrolls past it.
+const MEDIA_HOSTS = ['ibb.co', 'googleusercontent.com'];
+function hostAllowed(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return MEDIA_HOSTS.some((allowed) => h === allowed || h.endsWith(`.${allowed}`));
+}
+
 export function sanitizeMediaUrl(url: string | null | undefined): string | null {
   if (!url || typeof url !== 'string') return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith('/uploads/') || trimmed.startsWith('/src/assets/') || trimmed.startsWith('/')) {
+  if (trimmed.startsWith('/')) {
     if (trimmed.startsWith('//')) return null;
     return trimmed;
   }
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+    if (parsed.protocol === 'https:' && hostAllowed(parsed.hostname)) {
       return parsed.toString();
     }
   } catch {

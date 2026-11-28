@@ -1,5 +1,5 @@
 import express from 'express';
-import { attachAuth } from './middleware.ts';
+import { attachAuth, requireAuth } from './middleware.ts';
 import { authRouter } from './routes/authRoutes.ts';
 import { socialRouter } from './routes/socialRoutes.ts';
 import { communityRouter } from './routes/communityRoutes.ts';
@@ -7,6 +7,7 @@ import { messagesRouter } from './routes/messagesRoutes.ts';
 import { adminRouter } from './routes/adminRoutes.ts';
 import { getMedia } from './media.ts';
 import { rtdb } from './admin.ts';
+import { get } from './store.ts';
 
 export function createApi() {
   const app = express();
@@ -23,17 +24,26 @@ export function createApi() {
     }
   });
 
-  // Voice notes are stored in Realtime Database and served here.
-  app.get('/api/media/:id', async (req, res) => {
+  app.use('/api', attachAuth);
+
+  // Voice notes live in Realtime Database and are served here. Only the person who
+  // uploaded the note and the two sides of the conversation it was sent in may fetch
+  // it: a forwarded link is no longer enough on its own.
+  app.get('/api/media/:id', requireAuth, async (req, res) => {
     const m = await getMedia(String(req.params.id));
     if (!m) return void res.status(404).end();
+    const uid = req.user!.id;
+    let allowed = Number(m.owner) === uid;
+    if (!allowed && m.conversation_id) {
+      const conv = await get<any>('conversations', Number(m.conversation_id));
+      allowed = Boolean(conv && (conv.user1_id === uid || conv.user2_id === uid));
+    }
+    if (!allowed) return void res.status(403).json({ error: 'غير مصرح بالوصول لهذا الملف.' });
     res.setHeader('Content-Type', m.mime);
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', 'private, no-store');
     res.send(Buffer.from(m.data, 'base64'));
   });
-
-  app.use('/api', attachAuth);
   app.use('/api', authRouter);
   app.use('/api', socialRouter);
   app.use('/api', communityRouter);

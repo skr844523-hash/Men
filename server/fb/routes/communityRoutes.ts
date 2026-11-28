@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { rtdb } from '../admin.ts';
 import { bump, get, getKeyed, insert, lastN, nowIso, patch, putKeyed, remove, where } from '../store.ts';
 import { awardUserPoints, getSetting } from '../core.ts';
-import { rateLimit, requireActiveAccount, requireAuth } from '../middleware.ts';
+import { rateLimit, rateLimitMemory, requireActiveAccount, requireAuth } from '../middleware.ts';
 import { broadcastPostEvent, pushNotification } from '../realtime.ts';
 import { buildCtx, canViewPost, isBlocked, serializePost, userOf } from '../posts.ts';
 import { checkContentSafety, sanitizeMediaUrl } from '../../../src/lib/validation.ts';
@@ -11,8 +11,27 @@ export const communityRouter = Router();
 const num = (v: unknown) => Number(v);
 const byCreated = (a: any, b: any) => String(a.created_at).localeCompare(String(b.created_at));
 
+// Short-lived cache for the two discovery reads. Both scan the recent feed and build
+// the same payload for every signed-out visitor, so serving them from memory keeps a
+// loop of anonymous requests from turning into a loop of database reads.
+const READ_CACHE_TTL_MS = 30_000;
+const readCache = new Map<string, { at: number; value: unknown }>();
+function cacheGet<T>(key: string): T | null {
+  const e = readCache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > READ_CACHE_TTL_MS) {
+    readCache.delete(key);
+    return null;
+  }
+  return e.value as T;
+}
+function cacheSet(key: string, value: unknown): void {
+  if (readCache.size > 200) readCache.clear();
+  readCache.set(key, { at: Date.now(), value });
+}
+
 // ---------- Questions ----------
-communityRouter.get('/questions/:postId/answers', async (req, res) => {
+communityRouter.get('/questions/:postId/answers', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const postId = num(req.params.postId);
   const ctx = await buildCtx(req.user?.id ?? null);
   const post = await get<any>('posts', postId);
@@ -124,7 +143,7 @@ async function allCommunities() {
   return (await all<any>('communities')).filter((c) => c.is_hidden !== 1);
 }
 
-communityRouter.get('/communities', async (req, res) => {
+communityRouter.get('/communities', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const q = String(req.query.q || '').trim().toLowerCase();
   const category = String(req.query.category || '');
@@ -167,7 +186,7 @@ communityRouter.post('/communities', requireActiveAccount, rateLimit('community'
   }
 });
 
-communityRouter.get('/communities/:id', async (req, res) => {
+communityRouter.get('/communities/:id', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const communityId = num(req.params.id);
   const ctx = await buildCtx(req.user?.id ?? null);
   const comm = await get<any>('communities', communityId);
@@ -187,10 +206,13 @@ communityRouter.get('/communities/:id', async (req, res) => {
     const mineP = (await where<any>('posts', 'community_id', communityId)).filter((p) => p.is_hidden !== 1).sort((a, b) => b.id - a.id).slice(0, 60);
     for (const p of mineP) if (await canViewPost(ctx, p)) posts.push(await serializePost(ctx, p));
   }
+  // Who is inside a private community is itself private: show the roster only to
+  // members, and to everyone for public communities.
+  const visibleMembers = canSee ? members : [];
   res.json({
     community: {
       ...commView({ ...comm, members_count: members.length }), isMember: Boolean(mine), myRole: mine?.role ?? null,
-      moderators: members.filter((m) => m.role === 'owner' || m.role === 'moderator'), members, posts,
+      moderators: visibleMembers.filter((m) => m.role === 'owner' || m.role === 'moderator'), members: visibleMembers, posts,
     },
   });
 });
@@ -254,7 +276,7 @@ communityRouter.delete('/communities/:id/members/:userId', requireAuth, async (r
 });
 
 // ---------- Daily question ----------
-communityRouter.get('/daily-question', async (req, res) => {
+communityRouter.get('/daily-question', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const { all } = await import('../store.ts');
   const qs = (await all<any>('daily_questions')).sort((a, b) => b.id - a.id);
@@ -291,7 +313,7 @@ communityRouter.post('/daily-question/:id/answer', requireActiveAccount, rateLim
 });
 
 // ---------- Challenges ----------
-communityRouter.get('/challenges', async (req, res) => {
+communityRouter.get('/challenges', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const { all } = await import('../store.ts');
   const chs = (await all<any>('challenges')).sort((a, b) => Number(a.status !== 'active') - Number(b.status !== 'active') || String(b.created_at).localeCompare(String(a.created_at)));
@@ -346,43 +368,64 @@ const topicsOf = (posts: Array<{ category: string }>) => {
 };
 const userBrief = (u: any) => ({ id: u.id, username: u.username, display_name: u.display_name, avatar: u.avatar, bio: u.bio || '' });
 
-communityRouter.get('/explore', async (req, res) => {
+communityRouter.get('/explore', rateLimitMemory('read', 120, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const q = String(req.query.q || '').trim();
   const filter = String(req.query.filter || 'all');
+  // Signed-out visitors get posts, communities and categories only. The member
+  // directory needs an account, so it cannot be scraped anonymously.
+  const cacheKey = ctx.uid ? null : `explore:${q}:${filter}`;
+  if (cacheKey) {
+    const hit = cacheGet<Record<string, unknown>>(cacheKey);
+    if (hit) return void res.json(hit);
+  }
   const categories = await getSetting<string[]>('categories', []);
   const visiblePosts = await visibleRecent(ctx, 120);
   const trendingPosts = [...visiblePosts].sort((a, b) => b.trendingScore - a.trendingScore);
   const comms = (await allCommunities()).sort((a, b) => Number(b.members_count || 0) - Number(a.members_count || 0)).slice(0, 12).map(commView);
-  const { lastN: lastUsers } = await import('../store.ts');
-  const users = (await lastUsers<any>('users', 200)).filter((u) => u.status === 'active');
+  let users: any[] = [];
+  if (ctx.uid) {
+    const { lastN: lastUsers } = await import('../store.ts');
+    users = (await lastUsers<any>('users', 200)).filter((u) => u.status === 'active');
+  }
   const suggestedUsers = users.filter((u) => u.privacy_level === 'public' && u.id !== ctx.uid).sort((a, b) => String(b.last_active_at).localeCompare(String(a.last_active_at))).slice(0, 12).map(userBrief);
   if (!q) {
-    return void res.json({
+    const payload = {
       categories, trendingTopics: topicsOf(visiblePosts), trendingPosts: trendingPosts.slice(0, 10),
       worthyConfessions: trendingPosts.filter((p) => p.type === 'confession').slice(0, 6),
       popularQuestions: trendingPosts.filter((p) => p.type === 'question').slice(0, 6),
       activeCommunities: comms, suggestedUsers,
-    });
+    };
+    if (cacheKey) cacheSet(cacheKey, payload);
+    return void res.json(payload);
   }
   const lq = q.toLowerCase();
-  const matchedUsers = filter === 'all' || filter === 'users'
+  const matchedUsers = ctx.uid && (filter === 'all' || filter === 'users')
     ? users.filter((u) => u.privacy_level !== 'limited' && (String(u.username).toLowerCase().includes(lq) || String(u.display_name).toLowerCase().includes(lq))).slice(0, 25).map(userBrief) : [];
   const matchedPosts = filter === 'all' || filter === 'posts' || filter === 'categories'
     ? visiblePosts.filter((p) => p.content.toLowerCase().includes(lq) || p.category.toLowerCase().includes(lq) || (p.moodType && p.moodType.toLowerCase().includes(lq))) : [];
   const matchedComms = filter === 'all' || filter === 'communities'
     ? comms.filter((c) => [c.name, c.description, c.category].some((s) => String(s).toLowerCase().includes(lq))) : [];
-  res.json({ query: q, users: matchedUsers, posts: matchedPosts, communities: matchedComms, categories: categories.filter((c) => c.toLowerCase().includes(lq)) });
+  const payload = { query: q, users: matchedUsers, posts: matchedPosts, communities: matchedComms, categories: categories.filter((c) => c.toLowerCase().includes(lq)) };
+  if (cacheKey) cacheSet(cacheKey, payload);
+  res.json(payload);
 });
 
-communityRouter.get('/trending', async (req, res) => {
+communityRouter.get('/trending', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
+  const cacheKey = ctx.uid ? null : 'trending:anon';
+  if (cacheKey) {
+    const hit = cacheGet<Record<string, unknown>>(cacheKey);
+    if (hit) return void res.json(hit);
+  }
   const ranked = (await visibleRecent(ctx, 150)).sort((a, b) => b.trendingScore - a.trendingScore);
   const communities = (await allCommunities()).sort((a, b) => Number(b.posts_count || 0) * 2 + Number(b.members_count || 0) - (Number(a.posts_count || 0) * 2 + Number(a.members_count || 0))).slice(0, 10).map(commView);
-  res.json({
+  const payload = {
     posts: ranked.filter((p) => p.type === 'post' || p.type === 'confession').slice(0, 20),
     questions: ranked.filter((p) => p.type === 'question').slice(0, 15),
     polls: ranked.filter((p) => p.type === 'poll').slice(0, 15),
     communities, topics: topicsOf(ranked),
-  });
+  };
+  if (cacheKey) cacheSet(cacheKey, payload);
+  res.json(payload);
 });

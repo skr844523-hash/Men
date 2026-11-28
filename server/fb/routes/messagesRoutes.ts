@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { claimUnique, get, insert, lookupUnique, nowIso, patch, setUnique, where } from '../store.ts';
-import { rateLimit, requireActiveAccount, requireAuth } from '../middleware.ts';
+import { rateLimit, rateLimitMemory, requireActiveAccount, requireAuth } from '../middleware.ts';
+import { attachMediaToConversation, deleteMediaByUrl } from '../media.ts';
 import { pushNotification, sendToUser } from '../realtime.ts';
 import { buildCtx, isBlocked } from '../posts.ts';
 import { sanitizeMediaUrl } from '../../../src/lib/validation.ts';
@@ -26,7 +27,7 @@ async function markRead(convId: number, userId: number): Promise<number> {
   return unread.length;
 }
 
-messagesRouter.get('/messages/conversations', requireAuth, async (req, res) => {
+messagesRouter.get('/messages/conversations', rateLimitMemory('read', 200, 60000), requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const q = String(req.query.q || '').trim().toLowerCase();
   const ctx = await buildCtx(userId);
@@ -94,7 +95,7 @@ messagesRouter.post('/messages/conversations/:id/respond', requireAuth, async (r
   res.json({ ok: true, status: next });
 });
 
-messagesRouter.get('/messages/conversations/:id', requireAuth, async (req, res) => {
+messagesRouter.get('/messages/conversations/:id', rateLimitMemory('read', 200, 60000), requireAuth, async (req, res) => {
   const convId = num(req.params.id);
   const userId = req.user!.id;
   const conv = await myConv(convId, userId);
@@ -171,6 +172,8 @@ messagesRouter.post('/messages/conversations/:id', requireActiveAccount, rateLim
     conversation_id: convId, sender_id: userId, content: clean.slice(0, 2000), media_url: media ?? null, message_type: type,
     reply_to_id: replyTarget ? replyTarget.id : null, status, deleted_by_sender: 0, created_at: createdAt,
   });
+  // Stamp the voice note with this conversation so only its two sides can play it.
+  if (media) await attachMediaToConversation(media, userId, convId);
   await patch('conversations', convId, { last_message_at: createdAt });
   const payload = {
     id: m.id, conversationId: convId, senderId: userId, content: clean.slice(0, 2000), mediaUrl: media ?? null, messageType: type,
@@ -193,6 +196,7 @@ messagesRouter.delete('/messages/:messageId', requireAuth, async (req, res) => {
   const userId = req.user!.id;
   const msg = await get<any>('messages', msgId);
   if (!msg || msg.sender_id !== userId) return void res.status(403).json({ error: 'يمكنك حذف رسائلك فقط.' });
+  await deleteMediaByUrl(msg.media_url ?? null);
   await patch('messages', msgId, { deleted_by_sender: 1, content: '', media_url: null });
   const conv = await get<any>('conversations', msg.conversation_id);
   if (conv) await sendToUser(peerOf(conv, userId), { type: 'message:deleted', conversationId: msg.conversation_id, messageId: msgId });

@@ -1,4 +1,5 @@
 import { all, bump, get, releaseUnique, remove, where } from './store.ts';
+import { deleteMediaByUrl, deleteMediaOwnedBy } from './media.ts';
 
 // Removes everything a user owns. Called on account deletion.
 const BY_FIELD: Array<[string, string]> = [
@@ -17,11 +18,16 @@ export async function deleteUserData(userId: number): Promise<void> {
   }
   for (const field of ['user1_id', 'user2_id']) {
     for (const c of await where<any>('conversations', field, userId)) {
-      for (const m of await where<any>('messages', 'conversation_id', c.id)) await remove('messages', m.id);
+      for (const m of await where<any>('messages', 'conversation_id', c.id)) {
+        await deleteMediaByUrl(m.media_url ?? null);
+        await remove('messages', m.id);
+      }
       await releaseUnique('conv', `${Math.min(c.user1_id, c.user2_id)}_${Math.max(c.user1_id, c.user2_id)}`);
       await remove('conversations', c.id);
     }
   }
+  // Uploaded voice notes belong to the account that uploaded them.
+  await deleteMediaOwnedBy(userId);
   void all;
 }
 

@@ -13,6 +13,8 @@ export interface AuthUser {
   status: 'active' | 'suspended' | 'banned';
   displayName: string;
   avatar: string;
+  // From the verified Firebase ID token, not the database row.
+  emailVerified: boolean;
 }
 
 declare global {
@@ -44,6 +46,7 @@ export async function attachAuth(req: Request, _res: Response, next: NextFunctio
         req.user = {
           id: u.id, uid: u.uid, username: u.username, email: u.email ?? null, phone: u.phone ?? null,
           role: u.role, status: u.status, displayName: u.display_name, avatar: u.avatar,
+          emailVerified: Boolean(decoded.email_verified),
         };
       }
     }
@@ -72,6 +75,15 @@ export function requireActiveAccount(req: Request, res: Response, next: NextFunc
   }
   if (req.user.status !== 'active') {
     res.status(403).json({ error: 'حسابك موقوف حاليًا ولا يمكنك النشر أو التفاعل.' });
+    return;
+  }
+  // A confirmed email is required before writing anything: it is what stops
+  // throwaway accounts from posting spam or evading a ban.
+  if (!req.user.emailVerified) {
+    res.status(403).json({
+      error: 'أكد بريدك الإلكتروني أولًا من الإعدادات، وبعدها تقدر تنشر وتتفاعل.',
+      code: 'email_not_verified',
+    });
     return;
   }
   next();
@@ -107,12 +119,46 @@ export function rateLimit(bucket: string, maxRequests: number, windowMs: number)
       const win = Math.floor(Date.now() / windowMs);
       const key = `${bucket}:${who}:${win}`.replace(/[.#$\[\]/]/g, '_');
       const r = await rtdb.ref(`ratelimits/${key}`).transaction((v) => (Number(v) || 0) + 1);
+      if (Number(r.snapshot.val()) === 1) {
+        // First hit of this window: drop the counter from the window before it so
+        // the node does not grow one key per caller per window forever.
+        const prevKey = `${bucket}:${who}:${win - 1}`.replace(/[.#$\[\]/]/g, '_');
+        void rtdb.ref(`ratelimits/${prevKey}`).remove().catch(() => {});
+      }
       if (Number(r.snapshot.val()) > maxRequests) {
         res.status(429).json({ error: 'تم تجاوز الحد المسموح مؤقتًا. انتظر قليلًا ثم حاول مرة أخرى.' });
         return;
       }
     } catch {
       // never block users because the limiter failed
+    }
+    next();
+  };
+}
+
+// Cheap per-instance limiter for read endpoints. Reads are the expensive path
+// (a single feed request can touch hundreds of records), and writing a counter to
+// the database on every read would cost more than it saves. This keeps the counter
+// in the function's memory, which is enough to stop one client hammering a warm
+// instance, and adds no database traffic at all.
+const memCounters = new Map<string, { count: number; resetAt: number }>();
+export function rateLimitMemory(bucket: string, maxRequests: number, windowMs: number) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const who = String(req.user?.id ?? req.headers['x-forwarded-for'] ?? req.ip ?? 'anon').split(',')[0].trim();
+    const key = `${bucket}:${who}`;
+    const now = Date.now();
+    if (memCounters.size > 5000) memCounters.clear();
+    const cur = memCounters.get(key);
+    if (!cur || now >= cur.resetAt) {
+      memCounters.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+    cur.count += 1;
+    if (cur.count > maxRequests) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((cur.resetAt - now) / 1000))));
+      res.status(429).json({ error: 'تم تجاوز الحد المسموح مؤقتًا. انتظر قليلًا ثم حاول مرة أخرى.' });
+      return;
     }
     next();
   };

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { rtdb } from '../admin.ts';
 import { bump, get, getKeyed, insert, lastN, nowIso, pairKey, patch, putKeyed, remove, where } from '../store.ts';
 import { awardUserPoints, getUserPointsTotal } from '../core.ts';
-import { rateLimit, requireActiveAccount, requireAuth } from '../middleware.ts';
+import { rateLimit, rateLimitMemory, requireActiveAccount, requireAuth } from '../middleware.ts';
 import { broadcastPostEvent, pushNotification, sendToUser } from '../realtime.ts';
 import { buildCtx, canViewPost, commOf, isBlocked, serializePost, userOf, type Ctx } from '../posts.ts';
 import { checkContentSafety, sanitizeMediaUrl } from '../../../src/lib/validation.ts';
@@ -22,7 +22,7 @@ async function loadVisiblePost(ctx: Ctx, id: number) {
 }
 
 // ---------- Feed ----------
-socialRouter.get('/posts', async (req, res) => {
+socialRouter.get('/posts', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const filter = String(req.query.filter || 'latest');
   const category = String(req.query.category || '');
@@ -35,7 +35,10 @@ socialRouter.get('/posts', async (req, res) => {
   const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
   const allowedTypes = new Set(['post', 'confession', 'question', 'poll', 'challenge_entry']);
 
-  const recent = await lastN<any>('posts', 400);
+  // Only load as much history as this page can actually show, instead of a fixed
+  // 400 posts per request for every visitor.
+  const windowSize = Math.min(200, Math.max(60, offset + limit * 4));
+  const recent = await lastN<any>('posts', windowSize);
   const rows = recent
     .filter((p) => p.is_hidden !== 1)
     .filter((p) => !(type && allowedTypes.has(type)) || p.type === type)
@@ -67,7 +70,7 @@ socialRouter.get('/posts', async (req, res) => {
   res.json({ items: visible.slice(offset, offset + limit), total, hasMore: offset + limit < total });
 });
 
-socialRouter.get('/posts/:id', async (req, res) => {
+socialRouter.get('/posts/:id', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const ctx = await buildCtx(req.user?.id ?? null);
   const post = await loadVisiblePost(ctx, num(req.params.id));
   if (!post) return void res.status(404).json({ error: 'المنشور غير موجود أو غير متاح للعرض.' });
@@ -234,7 +237,7 @@ socialRouter.get('/saved', requireAuth, async (req, res) => {
 // ---------- Comments ----------
 const authorView = (u: any) => ({ id: u.id, username: u.username, displayName: u.display_name, avatar: u.avatar });
 
-socialRouter.get('/posts/:id/comments', async (req, res) => {
+socialRouter.get('/posts/:id/comments', rateLimitMemory('read', 180, 60000), async (req, res) => {
   const postId = num(req.params.id);
   const ctx = await buildCtx(req.user?.id ?? null);
   if (!(await loadVisiblePost(ctx, postId))) return void res.status(404).json(NOT_FOUND_POST);
@@ -338,7 +341,7 @@ async function usernameToId(username: string): Promise<number | null> {
   return id != null && id !== 'pending' ? Number(id) : null;
 }
 
-socialRouter.get('/users/:username', async (req, res) => {
+socialRouter.get('/users/:username', rateLimitMemory('read', 120, 60000), async (req, res) => {
   const handle = String(req.params.username).trim().toLowerCase().replace(/^@+/, '');
   const ctx = await buildCtx(req.user?.id ?? null);
   const targetId = await usernameToId(handle);
@@ -375,7 +378,7 @@ socialRouter.get('/users/:username', async (req, res) => {
       id: targetId, username: row.username, displayName: row.display_name, avatar: row.avatar,
       bio: canSee ? row.bio || '' : '', interests: canSee && Array.isArray(row.interests) ? row.interests : [],
       privacyLevel, canSeeFullProfile: canSee, isSelf, friendStatus, isFollowing,
-      allowMessagesFrom: row.allow_messages_from, lastActiveAt: row.show_activity ? row.last_active_at : null,
+      allowMessagesFrom: row.allow_messages_from, lastActiveAt: row.show_activity && (isSelf || isFriend) ? row.last_active_at : null,
       createdAt: row.created_at, friendsCount, followersCount: followers.length,
       postsCount: theirPosts.filter((p) => p.is_anonymous !== 1 && p.is_hidden !== 1).length,
       points, level: getLevelInfo(points), badges, posts,
@@ -543,7 +546,7 @@ socialRouter.post('/notifications/read-all', requireAuth, async (req, res) => {
 });
 
 // ---------- Support ----------
-socialRouter.post('/support', rateLimit('support', 6, 60000), async (req, res) => {
+socialRouter.post('/support', requireAuth, rateLimit('support', 6, 60000), async (req, res) => {
   const { category, subject, description, imageUrl } = req.body ?? {};
   const s = String(subject || '').trim();
   const d = String(description || '').trim();
@@ -551,7 +554,7 @@ socialRouter.post('/support', rateLimit('support', 6, 60000), async (req, res) =
   const safety = checkContentSafety(d, { allowContactInfo: true });
   if (!safety.safe) return void res.status(400).json({ error: safety.reason });
   const row = await insert('support_requests', {
-    user_id: req.user?.id ?? 0, category: String(category || 'أخرى').slice(0, 80), subject: s.slice(0, 150), description: d.slice(0, 2000),
+    user_id: req.user!.id, category: String(category || 'أخرى').slice(0, 80), subject: s.slice(0, 150), description: d.slice(0, 2000),
     image_url: sanitizeMediaUrl(imageUrl) ?? null, status: 'open', admin_reply: '', created_at: nowIso(),
   });
   res.status(201).json({ id: row.id, ok: true });

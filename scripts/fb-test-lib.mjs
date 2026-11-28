@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { auth as adminAuth } from '../server/fb/admin.ts';
 export const results = { pass: 0, fail: 0 };
 export function check(name, cond, extra = '') {
   if (cond) { results.pass++; console.log('  ok  ', name); }
@@ -37,4 +38,12 @@ export function client(base) {
     let j = {}; try { j = await r.json(); } catch {}
     return { status: r.status, body: j };
   };
+}
+
+// MEEN requires a confirmed email before an account can post. In the emulator there
+// is no inbox, so confirm it directly through the admin SDK before signing in.
+export async function markVerified(email) {
+  const u = await adminAuth.getUserByEmail(email);
+  if (!u.emailVerified) await adminAuth.updateUser(u.uid, { emailVerified: true });
+  return u.uid;
 }

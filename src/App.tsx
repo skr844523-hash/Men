@@ -70,6 +70,7 @@ export default function App() {
   });
   const [booting, setBooting] = useState(true);
   const [user, setUser] = useState<User | null>(null);
+  const [verifyMailState, setVerifyMailState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [guestMode, setGuestMode] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [appConfig, setAppConfig] = useState<AppConfig>(DEFAULT_CONFIG);
@@ -140,6 +141,16 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  const resendVerificationEmail = useCallback(async () => {
+    setVerifyMailState('sending');
+    try {
+      await apiRequest('/auth/resend-verification', { method: 'POST', body: {} });
+      setVerifyMailState('sent');
+    } catch {
+      setVerifyMailState('error');
+    }
+  }, []);
 
   const fetchMe = useCallback(async () => {
     try {
@@ -328,6 +339,27 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F8F7FB] dark:bg-[#09090D] text-slate-900 dark:text-[#F4F3FA] pb-20 lg:pb-8">
+      {user && user.emailVerified === false && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-900 dark:text-amber-200 px-4 py-2.5">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
+            <span>أكد بريدك الإلكتروني عشان تقدر تنشر وتتفاعل. افتح الرسالة اللي وصلك في الإيميل.</span>
+            <button
+              type="button"
+              onClick={resendVerificationEmail}
+              disabled={verifyMailState === 'sending'}
+              className="min-h-[32px] px-3 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-white text-[11px] font-bold"
+            >
+              {verifyMailState === 'sent'
+                ? 'تم إرسال الرسالة ✓'
+                : verifyMailState === 'sending'
+                  ? 'جاري الإرسال...'
+                  : verifyMailState === 'error'
+                    ? 'تعذر الإرسال، جرب تاني'
+                    : 'ابعت الرسالة تاني'}
+            </button>
+          </div>
+        </div>
+      )}
       {/* Top Bar (3-zone contract, <=56px sticky height) */}
       <header className="sticky top-0 z-30 h-14 bg-white/90 dark:bg-[#09090D]/90 backdrop-blur-md border-b border-slate-200/80 dark:border-white/8">
         <div className="max-w-7xl mx-auto h-full px-4 flex items-center justify-between gap-8">

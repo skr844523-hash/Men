@@ -1,11 +1,12 @@
 import { createApi } from '../server/fb/app.ts';
-import { check, results, client, idTokenFromCustom } from './fb-test-lib.mjs';
+import { check, results, client, idTokenFromCustom, markVerified } from './fb-test-lib.mjs';
 const server = createApi().listen(0);
 const api = client(`http://127.0.0.1:${server.address().port}`);
 
 async function mk(name) {
   let r = await api('POST', '/auth/register', { displayName: name, username: name, email: `${name}@example.com`, password: 'Passw0rd!x', confirmPassword: 'Passw0rd!x', birthDate: '2000-01-01', termsAccepted: true });
   if (r.status !== 201) throw new Error('register ' + JSON.stringify(r.body));
+  await markVerified(`${name}@example.com`);
   return { id: r.body.user.id, tok: await idTokenFromCustom(r.body.customToken), name };
 }
 const A = await mk('alice'), B = await mk('bobby'), C = await mk('carol');

@@ -1,4 +1,6 @@
 import { createApi } from '../server/fb/app.ts';
+// Never hardcode the real admin address in a public repo; run.sh passes it in.
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com';
 import { check, results, client, idTokenFromCustom, googleLikeToken } from './fb-test-lib.mjs';
 
 const server = createApi().listen(0);
@@ -13,7 +15,7 @@ r = await api('POST', '/auth/register', reg({ termsAccepted: false }));
 check('register requires terms', r.status === 400);
 r = await api('POST', '/auth/register', reg({ password: 'abc', confirmPassword: 'abc' }));
 check('register weak password rejected', r.status === 400, JSON.stringify(r.body));
-r = await api('POST', '/auth/register', reg({ email: 'ssakr9640@gmail.com' }));
+r = await api('POST', '/auth/register', reg({ email: ADMIN_EMAIL }));
 check('admin email cannot be claimed by password signup', r.status === 400);
 r = await api('POST', '/auth/register', reg());
 check('register ok', r.status === 201 && r.body.customToken && r.body.user.username === 'salma_1', JSON.stringify(r.body));
@@ -45,12 +47,12 @@ r = await api('PATCH', '/account/privacy', { privacyLevel: 'friends', notifyPref
 check('privacy patch', r.status === 200 && r.body.user.privacyLevel === 'friends' && r.body.user.notifyPrefs.messages === false);
 
 // Google admin
-const gTok = await googleLikeToken('ssakr9640@gmail.com', 'Salah');
+const gTok = await googleLikeToken(ADMIN_EMAIL, 'Salah');
 r = await api('GET', '/auth/me', undefined, gTok);
 check('google first login needs profile', r.body.user === null && r.body.needsProfile === true);
 r = await api('POST', '/auth/complete-profile', { displayName: 'Salah', username: 'salah', birthDate: '2000-01-01', termsAccepted: true, role: 'admin' }, gTok);
 check('complete profile', r.status === 201 && r.body.user.role === 'admin', JSON.stringify(r.body));
-const adminTok2 = await googleLikeToken('ssakr9640@gmail.com', 'Salah');
+const adminTok2 = await googleLikeToken(ADMIN_EMAIL, 'Salah');
 r = await api('GET', '/auth/me', undefined, adminTok2);
 check('admin recognised', r.body.user?.role === 'admin' && r.body.hasAdmin === true);
 
@@ -73,8 +75,15 @@ check('upload rejects bad png', r.status === 400);
 const wav = 'data:audio/webm;base64,' + Buffer.from('hello voice').toString('base64');
 r = await api('POST', '/upload', { dataUrl: wav }, tok3);
 check('voice upload ok', r.status === 200 && r.body.url.startsWith('/api/media/'));
-const m = await fetch(base + r.body.url);
-check('voice served', m.status === 200 && (await m.text()) === 'hello voice');
+const voiceUrl = r.body.url;
+const m = await fetch(base + voiceUrl, { headers: { authorization: 'Bearer ' + tok3 } });
+check('voice served to its owner', m.status === 200 && (await m.text()) === 'hello voice');
+const anonVoice = await fetch(base + voiceUrl);
+check('voice not served anonymously', anonVoice.status === 401);
+const otherReg = await api('POST', '/auth/register', reg({ username: 'voice_other', email: 'voice_other@example.com' }));
+const otherTok = await idTokenFromCustom(otherReg.body.customToken);
+const otherVoice = await fetch(base + voiceUrl, { headers: { authorization: 'Bearer ' + otherTok } });
+check('voice not served to another account', otherVoice.status === 403);
 r = await api('POST', '/upload', { dataUrl: wav });
 check('upload needs auth', r.status === 401);
 

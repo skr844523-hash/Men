@@ -1,12 +1,15 @@
 import { createApi } from '../server/fb/app.ts';
-import { check, results, client, idTokenFromCustom, googleLikeToken } from './fb-test-lib.mjs';
+// Never hardcode the real admin address in a public repo; run.sh passes it in.
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com';
+import { check, results, client, idTokenFromCustom, markVerified, googleLikeToken } from './fb-test-lib.mjs';
 const server = createApi().listen(0);
 const api = client(`http://127.0.0.1:${server.address().port}`);
 async function mk(name) {
   const r = await api('POST', '/auth/register', { displayName: name, username: name, email: `${name}@example.com`, password: 'Passw0rd!x', confirmPassword: 'Passw0rd!x', birthDate: '2000-01-01', termsAccepted: true });
+  await markVerified(`${name}@example.com`);
   return { id: r.body.user.id, tok: await idTokenFromCustom(r.body.customToken) };
 }
-const gTok = await googleLikeToken('ssakr9640@gmail.com', 'Salah');
+const gTok = await googleLikeToken(ADMIN_EMAIL, 'Salah');
 let r = await api('POST', '/auth/complete-profile', { displayName: 'Salah', username: 'salah', birthDate: '2000-01-01', termsAccepted: true }, gTok);
 const ADM = { id: r.body.user.id, tok: gTok };
 check('admin created via verified google ADMIN_EMAIL', r.body.user.role === 'admin');

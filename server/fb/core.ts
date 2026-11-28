@@ -142,6 +142,7 @@ export async function buildUserPayload(userId: number) {
     allowMessagesFrom: u.allow_messages_from, allowCommentsFrom: u.allow_comments_from,
     showPostsTo: u.show_posts_to, allowAnonMentions: Boolean(u.allow_anon_mentions),
     notifyPrefs, isPremium: Boolean(u.is_premium),
+    emailVerified: Boolean(u.email_verified),
     points, level, badges, unreadNotifications, unreadMessages,
   };
 }
